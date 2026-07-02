@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Code Editor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app-container">
+        <header id="top-bar">
+            <div class="window-title-left">
+                <img src="icon.png" id="app-icon" alt="App Icon">
+                <span id="app-title-text">Pro Code Editor</span>
+            </div>
+            
+            <div class="window-title-center flex-row">
+                <button id="btn-open-folder"><i class="fa-solid fa-folder-open"></i> Open Folder</button>
+                <button id="btn-new-file" disabled><i class="fa-solid fa-file-circle-plus"></i> New File</button>
+                <button id="btn-new-folder" disabled><i class="fa-solid fa-folder-plus"></i> New Folder</button>
+                <button id="btn-save-file" disabled><i class="fa-solid fa-floppy-disk"></i> Save</button>
+                <button id="btn-run-code" class="hidden-btn" title="Run Active C# Code"><i class="fa-solid fa-play" style="color: #4caf50;"></i> Run</button>
+                <span id="current-file-path">Workspace Closed</span>
+            </div>
+
+            <div class="window-title-right">
+                <button class="win-btn" id="win-min" title="Minimize"><i class="fa-solid fa-minus"></i></button>
+                <button class="win-btn" id="win-max" title="Maximize"><i class="fa-regular fa-square"></i></button>
+                <button class="win-btn" id="win-close" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+        </header>
+
+        <div id="main-content">
+            <nav id="activity-bar">
+                <div class="activity-top">
+                    <button class="activity-icon active" id="act-explorer" title="Explorer">
+                        <i class="fa-regular fa-copy"></i>
+                    </button>
+                    <button class="activity-icon" id="act-terminal" title="Terminal">
+                        <i class="fa-solid fa-terminal"></i>
+                    </button>
+                </div>
+                <div class="activity-bottom">
+                    <button class="activity-icon" id="act-settings" title="Settings Menu (Ctrl + ,)">
+                        <i class="fa-solid fa-gear"></i>
+                    </button>
+                </div>
+            </nav>
+
+            <aside id="sidebar">
+                <div class="sidebar-header">
+                    <span>EXPLORER</span>
+                </div>
+                <div id="file-tree"></div>
+            </aside>
+
+            <main id="workspace-container">
+                <div id="tab-bar"></div>
+                
+                <div id="editor-viewport-wrapper">
+                    <div id="line-gutter"></div>
+
+                    <div id="editor-surface-box">
+                        <div id="editor-backdrop"></div>
+                        <textarea id="editor" placeholder="// Select or create a file from the explorer to begin..." disabled spellcheck="false"></textarea>
+                    </div>
+
+                    <div id="minimap-gutter">
+                        <div id="minimap-indicator"></div>
+                        <pre id="minimap-text"></pre>
+                    </div>
+                </div>
+
+                <div id="bottom-panel" class="hidden-panel">
+                    <div class="panel-header">
+                        <span class="panel-title">TERMINAL</span>
+                        <button id="close-panel-btn">×</button>
+                    </div>
+                    <div id="terminal-container">
+                        <div id="terminal-output"></div>
+                        <div class="terminal-input-line">
+                            <span id="terminal-prompt" class="terminal-prompt">C:\&gt;</span>
+                            <input type="text" id="terminal-input" autocomplete="off" spellcheck="false">
+                        </div>
+                    </div>
+                </div>
+
+                <div id="settings-panel" class="hidden">
+                    <div class="settings-header">
+                        <h3><i class="fa-solid fa-gear"></i> Editor Preferences</h3>
+                        <button id="close-settings-btn">×</button>
+                    </div>
+                    <div class="settings-body">
+                        <div class="setting-item">
+                            <label for="theme-selector">Color Theme Preset:</label>
+                            <select id="theme-selector">
+                                <option value="vs-dark">VS Code Default Dark</option>
+                                <option value="dracula-intellij-light">Dracula IntelliJ Light</option>
+                                <option value="dracula-intellij-dark">Dracula IntelliJ Dark</option>
+                                <option value="monokai">Monokai Retro</option>
+                                <option value="github-light">GitHub Pure Light</option>
+                                <option value="solarized-dark">Solarized Oceanic</option>
+                                <option value="roblox-studio-light">Roblox Studio Light</option>
+                                <option value="roblox-studio-dark">Roblox Studio Dark</option>
+                            </select>
+                        </div>
+                        
+                        <div class="setting-item">
+                            <label for="icon-selector">Workspace Icon Pack:</label>
+                            <select id="icon-selector">
+                                <option value="material">VS Code Material (Icons)</option>
+                                <option value="emoji">Retro Emoji Pack</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-item">
+                            <label for="error-style-selector">Syntax Error Highlight Style:</label>
+                            <select id="error-style-selector">
+                                <option value="underline">Wavy Red Underline</option>
+                                <option value="highlight">IntelliJ Soft Highlight</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-item flex-row">
+                            <label for="prosense-toggle" class="flex-grow">Enable ProSense Autocomplete:</label>
+                            <input type="checkbox" id="prosense-toggle" checked>
+                        </div>
+
+                        <div class="setting-item">
+                            <label>Custom Snippets Expansion Manager:</label>
+                            <div id="snippets-manager">
+                                <div class="snippet-inputs flex-row">
+                                    <input type="text" id="snippet-trigger" placeholder="Trigger (e.g. ajax)">
+                                    <select id="snippet-lang">
+                                        <option value="all">All Languages</option>
+                                        <option value="js">JavaScript</option>
+                                        <option value="html">HTML</option>
+                                        <option value="css">CSS</option>
+                                        <option value="py">Python</option>
+                                        <option value="java">Java</option>
+                                        <option value="cs">C#</option>
+                                        <option value="cpp">C++</option>
+                                        <option value="c">C</option>
+                                        <option value="lua">Lua</option>
+                                    </select>
+                                </div>
+                                <textarea id="snippet-body" placeholder="Snippet Expansion Text... (use \n for standard newlines)"></textarea>
+                                <button id="add-snippet-btn"><i class="fa-solid fa-plus"></i> Add Snippet</button>
+                                <ul id="custom-snippets-list"></ul>
+                            </div>
+                        </div>
+                        
+                        <p class="shortcut-tip">Tip: Press <kbd>Ctrl</kbd> + <kbd>,</kbd> to toggle this menu anytime.</p>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <footer id="status-bar">
+            <div class="status-left">
+                <span id="status-state"><i class="fa-solid fa-circle-nodes"></i> Ready</span>
+            </div>
+            <div class="status-right">
+                <button id="btn-go-live" class="status-bar-btn hidden-btn" title="Run Local Web Server">
+                    <i class="fa-solid fa-tower-broadcast"></i> Go Live
+                </button>
+                <span id="status-theme-indicator"><i class="fa-solid fa-palette"></i> Theme: VS Code Dark</span>
+                <span>UTF-8</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Custom Async Prompt Modal -->
+    <div id="custom-prompt-modal" class="hidden-modal">
+        <div class="modal-content">
+            <h3 id="modal-title">Create File</h3>
+            <input type="text" id="modal-input" placeholder="Name..." autocomplete="off">
+            <div class="modal-buttons flex-row">
+                <button id="modal-cancel-btn">Cancel</button>
+                <button id="modal-ok-btn">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
