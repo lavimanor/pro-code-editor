@@ -128,13 +128,173 @@ function switchSidebarView(viewId, panelConfig = null) {
 }
 
 /**
+ * IDE Custom Splash / Welcome Page Overlay Renderer
+ */
+function showWelcomePage(contentHtml) {
+    let welcome = document.getElementById('ide-welcome-overlay');
+    if (!welcome) {
+        welcome = document.createElement('div');
+        welcome.id = 'ide-welcome-overlay';
+        welcome.style.position = 'absolute';
+        welcome.style.inset = '0';
+        welcome.style.background = 'var(--bg-dark)';
+        welcome.style.color = 'var(--text-main)';
+        welcome.style.display = 'flex';
+        welcome.style.flexDirection = 'column';
+        welcome.style.alignItems = 'center';
+        welcome.style.justifyContent = 'center';
+        welcome.style.padding = '32px';
+        welcome.style.zIndex = '10';
+        welcome.style.overflowY = 'auto';
+        editorSurfaceBox.appendChild(welcome);
+    }
+    welcome.innerHTML = contentHtml;
+    welcome.style.display = 'flex';
+}
+
+function hideWelcomePage() {
+    const welcome = document.getElementById('ide-welcome-overlay');
+    if (welcome) {
+        welcome.style.display = 'none';
+    }
+}
+
+/**
+ * Dynamically renders the IDE selector dropdown inside the top bar
+ */
+window.renderIdeSelector = () => {
+    const titleLeft = document.querySelector('.window-title-left');
+    if (!titleLeft) return;
+
+    let selector = document.getElementById('ide-selector');
+    if (!selector) {
+        selector = document.createElement('select');
+        selector.id = 'ide-selector';
+        selector.style.background = 'var(--bg-sidebar)';
+        selector.style.color = 'var(--text-main)';
+        selector.style.border = '1px solid var(--border-color)';
+        selector.style.padding = '4px 10px';
+        selector.style.borderRadius = '4px';
+        selector.style.fontSize = '11px';
+        selector.style.outline = 'none';
+        selector.style.cursor = 'pointer';
+        selector.style.marginLeft = '12px';
+        selector.style.fontFamily = 'var(--font-ui)';
+        selector.style.display = 'none';
+
+        selector.addEventListener('change', (e) => {
+            window.switchWorkspaceIDE(e.target.value);
+        });
+
+        titleLeft.appendChild(selector);
+    }
+
+    const ides = api.workspace.ides;
+    if (ides.size === 0) {
+        selector.style.display = 'none';
+        return;
+    }
+
+    selector.innerHTML = '';
+    
+    // Add baseline Normal Editor options
+    const defOpt = document.createElement('option');
+    defOpt.value = 'default';
+    defOpt.textContent = 'Normal Editor';
+    selector.appendChild(defOpt);
+
+    ides.forEach((config, id) => {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = config.name;
+        if (api.workspace.activeIdeId === id) {
+            opt.selected = true;
+        }
+        selector.appendChild(opt);
+    });
+
+    selector.style.display = 'inline-block';
+};
+
+/**
+ * Orchestrates seamless environment switching between installed IDEs
+ */
+window.switchWorkspaceIDE = (ideId) => {
+    const ideToolbarContainer = document.getElementById('ide-toolbar-container');
+    
+    // 1. Deactivate existing active workspace
+    const oldIde = api.workspace.getActiveIDE();
+    if (oldIde && typeof oldIde.onDeactivate === 'function') {
+        try { oldIde.onDeactivate(); } catch (err) { console.error(err); }
+    }
+
+    // Flush workspace context elements
+    if (ideToolbarContainer) ideToolbarContainer.innerHTML = '';
+    hideWelcomePage();
+
+    if (ideId === 'default' || !ideId) {
+        api.workspace.activeIdeId = null;
+        printToTerminal('[System] Switched to normal editor mode.', 'system');
+        editor.placeholder = "// Select or create a file from the explorer to begin...";
+        return;
+    }
+
+    const newIde = api.workspace.ides.get(ideId);
+    if (!newIde) return;
+
+    api.workspace.activeIdeId = ideId;
+    printToTerminal(`[System] Switched to ${newIde.name} environment.`, 'system');
+
+    // Build the dynamic workspace context passed to the IDE active hooks
+    const context = {
+        addToolbarButton: (id, label, iconClass, onClick) => {
+            const btn = document.createElement('button');
+            btn.id = `ide-btn-${id}`;
+            btn.className = 'ide-toolbar-button';
+            btn.style.background = 'var(--bg-button)';
+            btn.style.color = 'var(--text-main)';
+            btn.style.border = '1px solid var(--border-color)';
+            btn.style.padding = '4px 10px';
+            btn.style.borderRadius = '4px';
+            btn.style.fontSize = '12px';
+            btn.style.display = 'inline-flex';
+            btn.style.alignItems = 'center';
+            btn.style.gap = '6px';
+            btn.style.cursor = 'pointer';
+            btn.innerHTML = `<i class="${iconClass}"></i> ${label}`;
+            btn.addEventListener('click', onClick);
+            
+            if (ideToolbarContainer) {
+                ideToolbarContainer.appendChild(btn);
+            }
+        },
+        showWelcome: (html) => showWelcomePage(html),
+        hideWelcome: () => hideWelcomePage()
+    };
+
+    // Invoke workspace entry hooks
+    if (typeof newIde.onActivate === 'function') {
+        try { 
+            newIde.onActivate(context); 
+        } catch (err) { 
+            console.error(err); 
+            printToTerminal(`[System Error] IDE activation failed: ${err.message}`, 'system');
+        }
+    }
+
+    // Evaluate welcome overlay triggers
+    if (openTabs.length === 0 && typeof newIde.getWelcomePageHTML === 'function') {
+        showWelcomePage(newIde.getWelcomePageHTML());
+    }
+};
+
+/**
  * Dynamically renders custom setting panels contributed by active plugins.
  */
 window.renderDynamicSettings = () => {
     const settingsBody = document.querySelector('.settings-body');
     if (!settingsBody) return;
 
-    // Flush existing dynamic rows to avoid duplicates
     document.querySelectorAll('.dynamic-setting-item').forEach(el => el.remove());
 
     api.views.customSettings.forEach((config, id) => {
@@ -213,7 +373,6 @@ window.renderDynamicSidebarPanels = () => {
     const activityTop = document.querySelector('.activity-top');
     if (!activityTop) return;
 
-    // Flush existing dynamic tabs to avoid duplicates
     document.querySelectorAll('.dynamic-activity-icon').forEach(el => el.remove());
 
     api.views.sidebarPanels.forEach((config, id) => {
@@ -733,6 +892,7 @@ async function handleOpenFolder() {
 }
 
 async function handleOpenFile(fileHandle) {
+    hideWelcomePage(); // Instantly close active dynamic welcome screens on open file events
     const actualHandle = fileHandle.handle ? fileHandle.handle : fileHandle;
     try {
         if (!openTabs.find(t => fileKey(t) === fileKey(actualHandle))) {
@@ -756,7 +916,7 @@ async function handleOpenFile(fileHandle) {
         editor.value = contents;
         editor.disabled = false;
         btnSaveFile.disabled = false;
-        filePathDisplay.textContent = `Workspace / ${activeFileHandle.name}`;
+        filePathDisplay.textContent = "Workspace / " + activeFileHandle.name;
         
         updateGoLiveVisibility(activeFileHandle.name);
         updateRunButtonVisibility(activeFileHandle.name);
@@ -862,10 +1022,21 @@ function handleCloseTab(fileHandle) {
             updateGoLiveVisibility('');
             updateRunButtonVisibility('');
             runLayoutRenderEngine();
+
+            // Reactivate IDE welcome splash view on close tabs events if no open records remain
+            const activeIde = api.workspace.getActiveIDE();
+            if (activeIde && typeof activeIde.getWelcomePageHTML === 'function') {
+                showWelcomePage(activeIde.getWelcomePageHTML());
+            }
         }
     } else if (openTabs.length === 0) {
         updateGoLiveVisibility('');
         updateRunButtonVisibility('');
+
+        const activeIde = api.workspace.getActiveIDE();
+        if (activeIde && typeof activeIde.getWelcomePageHTML === 'function') {
+            showWelcomePage(activeIde.getWelcomePageHTML());
+        }
     }
     updateTabsUI();
     refreshExplorer();
@@ -979,6 +1150,20 @@ async function bootEditor() {
 
     // Scan and activate custom plugins
     await pluginManager.initialize();
+
+    // Set up top bar IDE switcher dropdown
+    window.renderIdeSelector();
+
+    // Prepare custom dynamic center toolbars container
+    const centerTitle = document.querySelector('.window-title-center');
+    let ideToolbarContainer = document.getElementById('ide-toolbar-container');
+    if (centerTitle && !ideToolbarContainer) {
+        ideToolbarContainer = document.createElement('div');
+        ideToolbarContainer.id = 'ide-toolbar-container';
+        ideToolbarContainer.style.display = 'flex';
+        ideToolbarContainer.style.gap = '8px';
+        centerTitle.appendChild(ideToolbarContainer);
+    }
 
     // Setup dynamic sidebar elements
     const sidebarHeader = sidebar.querySelector('.sidebar-header span');

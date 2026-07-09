@@ -100,26 +100,40 @@ class ViewsAPI {
         this.customSettings = new Map();
     }
 
-    /**
-     * Registers a new activity button and corresponding sidebar pane.
-     */
     registerSidebarPanel(id, config) {
-        // config: { iconClass: 'fa-regular fa-comment', title: 'Panel Name', render: (containerEl) => {} }
         this.sidebarPanels.set(id, config);
         if (typeof window.renderDynamicSidebarPanels === 'function') {
             window.renderDynamicSidebarPanels();
         }
     }
 
-    /**
-     * Registers a custom setting element within the preference manager.
-     */
     registerSetting(id, config) {
-        // config: { label: 'Enable X', type: 'checkbox' | 'select' | 'text' | 'number', defaultValue: false, options?: [], onChange: (val) => {} }
         this.customSettings.set(id, config);
         if (typeof window.renderDynamicSettings === 'function') {
             window.renderDynamicSettings();
         }
+    }
+}
+
+class WorkspaceAPI {
+    constructor() {
+        this.ides = new Map(); // Map of registered custom IDE environments
+        this.activeIdeId = null;
+    }
+
+    /**
+     * Registers a new custom IDE workspace configuration
+     */
+    registerIDE(id, config) {
+        // config: { name: 'Python IDE', onActivate: (ctx) => {}, onDeactivate: () => {}, getWelcomePageHTML?: () => string }
+        this.ides.set(id, config);
+        if (typeof window.renderIdeSelector === 'function') {
+            window.renderIdeSelector();
+        }
+    }
+
+    getActiveIDE() {
+        return this.activeIdeId ? this.ides.get(this.activeIdeId) : null;
     }
 }
 
@@ -131,6 +145,7 @@ class ProEditorAPI {
         this.languages = new LanguagesAPI();
         this.terminal = new TerminalAPI();
         this.views = new ViewsAPI();
+        this.workspace = new WorkspaceAPI();
     }
 }
 

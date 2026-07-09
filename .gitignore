@@ -2,3 +2,4 @@ node_modules/
 package-lock.json
 
 custom/extensions/test-extension/
+custom/extensions/ds/
