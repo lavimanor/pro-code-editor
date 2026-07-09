@@ -1,8 +1,8 @@
-/**
- * Application Icon Pack Registry Set Engine
- */
-export const ICON_PACKS = {
+import { api } from './api-core.js';
+
+const DEFAULT_ICON_PACKS = {
     'material': {
+        name: 'VS Code Material (Icons)',
         getFolderIcon: () => '<i class="fa-solid fa-folder"></i>',
         getFileIcon: (fileName) => {
             const ext = fileName.split('.').pop().toLowerCase();
@@ -25,6 +25,7 @@ export const ICON_PACKS = {
         }
     },
     'emoji': {
+        name: 'Retro Emoji Pack',
         getFolderIcon: () => '📁',
         getFileIcon: (fileName) => {
             const ext = fileName.split('.').pop().toLowerCase();
@@ -46,3 +47,23 @@ export const ICON_PACKS = {
         }
     }
 };
+
+// Register default icon packs
+Object.entries(DEFAULT_ICON_PACKS).forEach(([key, config]) => {
+    api.icons.register(key, config);
+});
+
+/**
+ * Renders registered options dynamically to the settings element
+ */
+export function renderIconSelector(selectorEl) {
+    if (!selectorEl) return;
+    selectorEl.innerHTML = '';
+    const allPacks = api.icons.getAll();
+    Object.entries(allPacks).forEach(([key, pack]) => {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = pack.name || key;
+        selectorEl.appendChild(opt);
+    });
+}

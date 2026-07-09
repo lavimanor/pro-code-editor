@@ -1,4 +1,4 @@
-import { LANGUAGE_REGISTRY, PARSER_RULES } from './prosense-db/registry.js';
+import { api } from './api-core.js';
 import { getCustomSnippets } from './snippets.js';
 
 let prosenseEl = null;
@@ -10,7 +10,6 @@ let isOpen = false;
 let delayTimeout = null;
 let latestExtraBuffers = [];
 
-// Completion type -> icon glyph + color. Data-driven (replaces a nested ternary).
 const TYPE_META = {
     tag:       { icon: 'fa-code',    color: '#e34c26' },
     attribute: { icon: 'fa-cube',    color: '#2196f3' },
@@ -23,10 +22,8 @@ const TYPE_META = {
 };
 const DEFAULT_TYPE_META = { icon: 'fa-bolt', color: '#ffeb3b' };
 
-// Relevance boost by where a completion came from (local file > db > other files).
 const SOURCE_BOOST = { local: 220, custom: 150, db: 0, extern: -90 };
 
-// --- Usage-frequency memory (breaks ties toward what you actually pick) ---
 function getUsageMap() {
     try {
         return JSON.parse(localStorage.getItem('prosense-usage') || '{}');
@@ -77,7 +74,7 @@ function insertSelection(item) {
 
     let newCursorPos = start + item.insertText.length;
     if (item.insertText.endsWith('()')) {
-        newCursorPos -= 1; // Position cursor inside the parentheses
+        newCursorPos -= 1; 
     } else if (item.insertText.endsWith('{}')) {
         newCursorPos -= 1;
     } else if (item.insertText.endsWith('[]')) {
@@ -180,20 +177,14 @@ export function handleProSenseKeydown(e) {
     return false;
 }
 
-/**
- * Config-driven parser: applies the PARSER_RULES for the given parser id to extract
- * declared variables, functions and types. Adding a language is a config edit in
- * registry.js — no code change here. `sourceTag` marks provenance for ranking.
- */
 function extractFileIdentifiers(text, parserType, sourceTag = 'local') {
-    const rules = PARSER_RULES[parserType];
+    const rules = api.languages.getParserRules(parserType);
     if (!rules) return [];
 
     const identifiers = [];
     const seen = new Set();
 
     for (const rule of rules) {
-        // Fresh RegExp so lastIndex never leaks between calls.
         const re = new RegExp(rule.regex.source, rule.regex.flags);
         let match;
         while ((match = re.exec(text)) !== null) {
@@ -213,11 +204,6 @@ function extractFileIdentifiers(text, parserType, sourceTag = 'local') {
     return identifiers;
 }
 
-/**
- * Fuzzy match score for `label` against typed `query`. Returns null when the query
- * chars are not all present (in order). Higher is better. Rewards prefix matches,
- * contiguous runs, and word boundaries (camelCase / underscore).
- */
 function scoreMatch(label, query) {
     if (!query) return 0;
     const l = label.toLowerCase();
@@ -235,7 +221,7 @@ function scoreMatch(label, query) {
         if (l[li] === q[qi]) {
             if (firstIdx === -1) firstIdx = li;
             streak++;
-            score += 8 + streak * 2; // reward contiguous runs
+            score += 8 + streak * 2; 
             const prev = label[li - 1];
             const isBoundary = li === 0 || prev === '_' ||
                 (label[li] >= 'A' && label[li] <= 'Z' && prev >= 'a' && prev <= 'z');
@@ -246,9 +232,9 @@ function scoreMatch(label, query) {
         }
     }
 
-    if (qi < q.length) return null; // not a subsequence match
-    score -= firstIdx;                     // earlier first hit is better
-    score -= (label.length - query.length) * 0.5; // prefer shorter labels
+    if (qi < q.length) return null; 
+    score -= firstIdx;                     
+    score -= (label.length - query.length) * 0.5; 
     return score;
 }
 
@@ -256,13 +242,12 @@ function evaluateProSense(fileName) {
     if (!editorEl) return;
 
     const ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
-    const config = LANGUAGE_REGISTRY[ext];
+    const config = api.languages.get(ext);
     if (!config) {
         hideProSense();
         return;
     }
 
-    // Symbols from the current file (source 'local') and from other open buffers ('extern').
     const localCompletions = extractFileIdentifiers(editorEl.value, config.parser, 'local');
     const externCompletions = [];
     const localLabels = new Set(localCompletions.map(c => c.label));
@@ -272,7 +257,6 @@ function evaluateProSense(fileName) {
         }
     }
 
-    // User-defined custom snippets scoped to this language.
     const customSnippets = getCustomSnippets()
         .filter(s => s.lang === 'all' || s.lang === ext)
         .map(s => ({ label: s.trigger, insertText: s.body, type: 'snippet', source: 'custom' }));
@@ -286,14 +270,12 @@ function evaluateProSense(fileName) {
         return;
     }
 
-    // If the exact word is already fully typed, there's nothing left to complete.
     const wordLower = word.toLowerCase();
     if (completions.some(item => item.label.toLowerCase() === wordLower)) {
         hideProSense();
         return;
     }
 
-    // Member access context: after a '.', bias toward members over bare keywords.
     const cursor = editorEl.selectionStart;
     const charBefore = editorEl.value[cursor - word.length - 1];
     const isMemberAccess = charBefore === '.';
@@ -305,7 +287,7 @@ function evaluateProSense(fileName) {
             const base = scoreMatch(item.label, word);
             if (base === null) return null;
             let score = base + (SOURCE_BOOST[item.source] || 0);
-            score += (usage[item.label] || 0) * 8; // frequency tie-breaker
+            score += (usage[item.label] || 0) * 8; 
             if (isMemberAccess) {
                 if (item.type === 'keyword') score -= 800;
                 else if (['function', 'property', 'variable'].includes(item.type)) score += 40;

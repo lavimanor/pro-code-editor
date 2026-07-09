@@ -850,3 +850,33 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     border-color: transparent;
     color: #ffffff;
 }
+
+/* Dynamic Sidebar View Panels Layout */
+#sidebar-plugin-content {
+    padding: 16px;
+    color: var(--text-main);
+    font-size: 13px;
+    line-height: 1.5;
+    flex: 1;
+    overflow-y: auto;
+}
+
+/* Dynamic Setting Input Standard Sizing */
+.dynamic-setting-item input[type="text"],
+.dynamic-setting-item input[type="number"],
+.dynamic-setting-item select {
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    padding: 6px;
+    border-radius: 4px;
+    outline: none;
+    font-family: var(--font-ui);
+    font-size: 12px;
+}
+
+.dynamic-setting-item input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}

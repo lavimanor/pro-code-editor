@@ -1,10 +1,14 @@
+import { api } from './api-core.js';
+import { pluginManager } from './plugin-manager.js';
 import { 
     readDirectoryEntries, readFileContents, saveFileContents, verifyPermission,
     openDirectoryPicker, createDirectoryHandle, createFileHandle, removeEntryHandle,
     resolveHandle
 } from './fs-handler.js';
 import { renderFileTree, renderTabs } from './ui-handler.js';
-import { applyTheme } from './themes.js';
+import { renderThemeSelector, applyTheme } from './themes.js';
+import { renderIconSelector } from './icons.js';
+import { registerCoreLanguages } from './prosense-db/registry.js';
 import { renderSyntaxHighlighting } from './syntax.js';
 import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBeforeCursor } from './prosense.js';
 import { initMinimapScroll } from './minimap.js';
@@ -39,6 +43,7 @@ const btnNewFolder = document.getElementById('btn-new-folder');
 const fileTreeContainer = document.getElementById('file-tree');
 const tabContainer = document.getElementById('tab-bar');
 const editor = document.getElementById('editor');
+const editorSurfaceBox = document.getElementById('editor-surface-box');
 const filePathDisplay = document.getElementById('current-file-path');
 
 // Rendering Layout Containers
@@ -61,36 +66,169 @@ const bottomPanel = document.getElementById('bottom-panel');
 const terminalOutput = document.getElementById('terminal-output');
 const terminalInput = document.getElementById('terminal-input');
 const terminalPrompt = document.getElementById('terminal-prompt');
-initTerminal(bottomPanel, terminalOutput, terminalInput, terminalPrompt);
 
-// Bind activity toggle triggers
-const actTerminal = document.getElementById('act-terminal');
-const closePanelBtn = document.getElementById('close-panel-btn');
-if (actTerminal) actTerminal.addEventListener('click', toggleTerminal);
-if (closePanelBtn) closePanelBtn.addEventListener('click', toggleTerminal);
-
-// Initialize State Defaults
-const cachedTheme = localStorage.getItem('editor-theme-preset') || 'vs-dark';
-themeSelector.value = cachedTheme;
-iconSelector.value = activeIconPack;
-applyTheme(cachedTheme);
-const editorSurfaceBox = document.getElementById('editor-surface-box');
-const prosenseToggle = document.getElementById('prosense-toggle');
-if (prosenseToggle) {
-    const isEnabled = localStorage.getItem('prosense-enabled') !== 'false';
-    prosenseToggle.checked = isEnabled;
-    localStorage.setItem('prosense-enabled', isEnabled);
-    prosenseToggle.addEventListener('change', (e) => {
-        localStorage.setItem('prosense-enabled', e.target.checked);
-    });
-}
-initProSense(editor, editorSurfaceBox);
+// Web Server Trigger Buttons
 const btnGoLive = document.getElementById('btn-go-live');
 let serverActiveUrl = null;
 
+// Run Code Trigger Buttons
+const btnRunCode = document.getElementById('btn-run-code');
+
+// Toggle Autocomplete Element
+const prosenseToggle = document.getElementById('prosense-toggle');
+
 /**
- * Monitors active tab file extensions to show/hide the "Go Live" server button.
+ * Sidebar Panel Switching Engine
  */
+let currentActiveView = 'explorer';
+
+function switchSidebarView(viewId, panelConfig = null) {
+    const fileTree = document.getElementById('file-tree');
+    const pluginContent = document.getElementById('sidebar-plugin-content');
+    const sidebarTitle = document.getElementById('sidebar-title');
+
+    // Deselect all active classes
+    document.querySelectorAll('.activity-icon').forEach(btn => btn.classList.remove('active'));
+
+    if (viewId === 'explorer') {
+        actExplorer.classList.add('active');
+        if (fileTree) fileTree.style.display = 'block';
+        if (pluginContent) pluginContent.style.display = 'none';
+        if (sidebarTitle) sidebarTitle.textContent = 'EXPLORER';
+        
+        if (currentActiveView === 'explorer') {
+            sidebar.classList.toggle('collapsed-bar');
+        } else {
+            sidebar.classList.remove('collapsed-bar');
+        }
+        currentActiveView = 'explorer';
+    } else if (panelConfig) {
+        const btn = document.getElementById(`act-btn-${viewId}`);
+        if (btn) btn.classList.add('active');
+        
+        if (fileTree) fileTree.style.display = 'none';
+        if (pluginContent) {
+            pluginContent.style.display = 'block';
+            pluginContent.innerHTML = '';
+            try {
+                panelConfig.render(pluginContent);
+            } catch (err) {
+                pluginContent.innerHTML = `<div style="padding:16px; color:#ef5350;">Error rendering view: ${err.message}</div>`;
+            }
+        }
+        if (sidebarTitle) sidebarTitle.textContent = panelConfig.title.toUpperCase();
+
+        if (currentActiveView === viewId) {
+            sidebar.classList.toggle('collapsed-bar');
+        } else {
+            sidebar.classList.remove('collapsed-bar');
+        }
+        currentActiveView = viewId;
+    }
+}
+
+/**
+ * Dynamically renders custom setting panels contributed by active plugins.
+ */
+window.renderDynamicSettings = () => {
+    const settingsBody = document.querySelector('.settings-body');
+    if (!settingsBody) return;
+
+    // Flush existing dynamic rows to avoid duplicates
+    document.querySelectorAll('.dynamic-setting-item').forEach(el => el.remove());
+
+    api.views.customSettings.forEach((config, id) => {
+        const div = document.createElement('div');
+        div.className = 'setting-item dynamic-setting-item';
+
+        const label = document.createElement('label');
+        label.textContent = config.label;
+        div.appendChild(label);
+
+        const cacheKey = `setting-pref-${id}`;
+        let currentValue = localStorage.getItem(cacheKey);
+        if (currentValue === null) {
+            currentValue = config.defaultValue;
+        } else {
+            if (config.type === 'checkbox') currentValue = (currentValue === 'true');
+            else if (config.type === 'number') currentValue = Number(currentValue);
+        }
+
+        let input;
+        if (config.type === 'select') {
+            input = document.createElement('select');
+            (config.options || []).forEach(optVal => {
+                const opt = document.createElement('option');
+                opt.value = optVal;
+                opt.textContent = optVal;
+                if (optVal === currentValue) opt.selected = true;
+                input.appendChild(opt);
+            });
+        } else if (config.type === 'checkbox') {
+            div.classList.add('flex-row');
+            label.classList.add('flex-grow');
+            input = document.createElement('input');
+            input.type = 'checkbox';
+            input.id = `setting-input-${id}`;
+            input.checked = !!currentValue;
+        } else {
+            input = document.createElement('input');
+            input.type = config.type || 'text';
+            input.value = currentValue;
+            input.style.background = 'var(--bg-dark)';
+            input.style.border = '1px solid var(--border-color)';
+            input.style.color = 'var(--text-main)';
+            input.style.padding = '6px';
+            input.style.borderRadius = '4px';
+            input.style.outline = 'none';
+        }
+
+        try { config.onChange(currentValue); } catch(e) {}
+
+        input.addEventListener('change', (e) => {
+            let val = config.type === 'checkbox' ? e.target.checked : e.target.value;
+            localStorage.setItem(cacheKey, val);
+            try {
+                config.onChange(val);
+            } catch (err) {
+                console.error(err);
+            }
+        });
+
+        div.appendChild(input);
+
+        const tip = settingsBody.querySelector('.shortcut-tip');
+        if (tip) {
+            settingsBody.insertBefore(div, tip);
+        } else {
+            settingsBody.appendChild(div);
+        }
+    });
+};
+
+/**
+ * Dynamically renders custom activity icons inside the Activity Bar.
+ */
+window.renderDynamicSidebarPanels = () => {
+    const activityTop = document.querySelector('.activity-top');
+    if (!activityTop) return;
+
+    // Flush existing dynamic tabs to avoid duplicates
+    document.querySelectorAll('.dynamic-activity-icon').forEach(el => el.remove());
+
+    api.views.sidebarPanels.forEach((config, id) => {
+        const btn = document.createElement('button');
+        btn.className = 'activity-icon dynamic-activity-icon';
+        btn.id = `act-btn-${id}`;
+        btn.title = config.title;
+        btn.innerHTML = `<i class="${config.iconClass}"></i>`;
+
+        btn.addEventListener('click', () => switchSidebarView(id, config));
+        activityTop.appendChild(btn);
+    });
+};
+
+// Monitors active tab file extensions to show/hide the "Go Live" server button
 function updateGoLiveVisibility(fileName) {
     if (!btnGoLive) return;
     
@@ -110,11 +248,8 @@ function updateGoLiveVisibility(fileName) {
         btnGoLive.classList.add('hidden-btn');
     }
 }
-const btnRunCode = document.getElementById('btn-run-code');
 
-/**
- * Monitors active tab file extensions to show/hide the "Run" button.
- */
+// Monitors active tab file extensions to show/hide the "Run" button
 function updateRunButtonVisibility(fileName) {
     if (!btnRunCode) return;
     const ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
@@ -133,10 +268,19 @@ const isElectronApp = typeof window !== 'undefined' && window.process && window.
 if (isElectronApp) {
     ipcRenderer = window.require('electron').ipcRenderer;
 
-    ipcRenderer.invoke('get-run-langs').then((langs) => {
-        runnableExts = new Set(Object.keys(langs || {}));
-        if (activeFileHandle) updateRunButtonVisibility(activeFileHandle.name);
-    }).catch(() => {});
+    window.updateRunnableExtensions = async () => {
+        if (ipcRenderer) {
+            try {
+                const langs = await ipcRenderer.invoke('get-run-langs');
+                runnableExts = new Set(Object.keys(langs || {}));
+                if (activeFileHandle) {
+                    updateRunButtonVisibility(activeFileHandle.name);
+                }
+            } catch (err) {
+                console.error('Failed to query active code runner list:', err);
+            }
+        }
+    };
 
     ipcRenderer.on('run-output', (e, { stream, data }) => {
         appendOutputChunk(data, stream);
@@ -219,7 +363,6 @@ if (isElectronApp) {
         });
     }
 }
-initMinimapScroll(editor, minimapGutter, minimapIndicator);
 
 // Safety listener for unsaved file contents
 window.addEventListener('beforeunload', (e) => {
@@ -286,7 +429,8 @@ iconSelector.addEventListener('change', (e) => {
     refreshExplorer();
 });
 
-actExplorer.addEventListener('click', () => sidebar.classList.toggle('collapsed-bar'));
+// Bind activity switches
+actExplorer.addEventListener('click', () => switchSidebarView('explorer'));
 actSettings.addEventListener('click', toggleSettingsPanel);
 closeSettingsBtn.addEventListener('click', toggleSettingsPanel);
 
@@ -638,7 +782,7 @@ async function handleSaveFile() {
 
 async function handleCreateFile() {
     const targetDir = selectedDirectoryContext || rootDirectoryHandle;
-    const fileName = await showPrompt(`Create file inside [${targetDir.name}]:`, 'filename.html');
+    const fileName = await showPrompt("Create file inside [" + targetDir.name + "]:", 'filename.html');
     if (!fileName) return;
     try {
         const newFileHandle = await createFileHandle(targetDir, fileName);
@@ -651,7 +795,7 @@ async function handleCreateFile() {
 
 async function handleCreateFolder() {
     const targetDir = selectedDirectoryContext || rootDirectoryHandle;
-    const folderName = await showPrompt(`Create directory inside [${targetDir.name}]:`, 'folder_name');
+    const folderName = await showPrompt("Create directory inside [" + targetDir.name + "]:", 'folder_name');
     if (!folderName) return;
     try {
         await createDirectoryHandle(targetDir, folderName);
@@ -698,7 +842,7 @@ async function handleMoveItem(sourceItem, targetDirectoryHandle) {
 function handleCloseTab(fileHandle) {
     const key = fileKey(fileHandle);
     if (dirtyFiles.has(key)) {
-        const confirmClose = confirm(`"${fileHandle.name}" contains unsaved changes. Close anyway?`);
+        const confirmClose = confirm('"' + fileHandle.name + '" contains unsaved changes. Close anyway?');
         if (!confirmClose) return;
     }
     openTabs = openTabs.filter(t => fileKey(t) !== key);
@@ -714,7 +858,7 @@ function handleCloseTab(fileHandle) {
             editor.value = '';
             editor.disabled = true;
             btnSaveFile.disabled = true;
-            filePathDisplay.textContent = rootDirectoryHandle ? `Workspace: ${rootDirectoryHandle.name}` : 'Workspace Closed';
+            filePathDisplay.textContent = rootDirectoryHandle ? "Workspace: " + rootDirectoryHandle.name : 'Workspace Closed';
             updateGoLiveVisibility('');
             updateRunButtonVisibility('');
             runLayoutRenderEngine();
@@ -728,7 +872,7 @@ function handleCloseTab(fileHandle) {
 }
 
 async function handleProjectItemDelete(item) {
-    const confirmDelete = confirm(`Permanently delete "${item.name}" from disk?`);
+    const confirmDelete = confirm('Permanently delete "' + item.name + '" from disk?');
     if (!confirmDelete) return;
     try {
         handleCloseTab(item.handle);
@@ -801,3 +945,70 @@ function showPrompt(title, placeholder = '') {
         modalInput.addEventListener('keydown', handleKeydown);
     });
 }
+
+// Bind activity panel toggles
+const actTerminal = document.getElementById('act-terminal');
+const closePanelBtn = document.getElementById('close-panel-btn');
+if (actTerminal) actTerminal.addEventListener('click', toggleTerminal);
+if (closePanelBtn) closePanelBtn.addEventListener('click', toggleTerminal);
+
+// Prosense Toggle setup
+if (prosenseToggle) {
+    const isEnabled = localStorage.getItem('prosense-enabled') !== 'false';
+    prosenseToggle.checked = isEnabled;
+    localStorage.setItem('prosense-enabled', isEnabled);
+    prosenseToggle.addEventListener('change', (e) => {
+        localStorage.setItem('prosense-enabled', e.target.checked);
+    });
+}
+
+// Initializing the minimap & ProSense components
+initMinimapScroll(editor, minimapGutter, minimapIndicator);
+initProSense(editor, editorSurfaceBox);
+
+// Initialize Terminal Panel Context
+initTerminal(bottomPanel, terminalOutput, terminalInput, terminalPrompt);
+
+/**
+ * Sequential Boot Loader: Ensures core subsystems and plugins load 
+ * prior to building selectors or configuring the workspace.
+ */
+async function bootEditor() {
+    // Register standard default programming languages
+    registerCoreLanguages(api);
+
+    // Scan and activate custom plugins
+    await pluginManager.initialize();
+
+    // Setup dynamic sidebar elements
+    const sidebarHeader = sidebar.querySelector('.sidebar-header span');
+    if (sidebarHeader && !sidebarHeader.id) {
+        sidebarHeader.id = 'sidebar-title';
+    }
+    let pluginContentContainer = document.getElementById('sidebar-plugin-content');
+    if (!pluginContentContainer) {
+        pluginContentContainer = document.createElement('div');
+        pluginContentContainer.id = 'sidebar-plugin-content';
+        pluginContentContainer.style.display = 'none';
+        pluginContentContainer.style.flex = '1';
+        pluginContentContainer.style.overflowY = 'auto';
+        sidebar.appendChild(pluginContentContainer);
+    }
+
+    // Dynamically render UI options based on loaded registries
+    renderThemeSelector(themeSelector);
+    renderIconSelector(iconSelector);
+    if (typeof window.renderDynamicSidebarPanels === 'function') window.renderDynamicSidebarPanels();
+    if (typeof window.renderDynamicSettings === 'function') window.renderDynamicSettings();
+
+    // Apply cached style preferences
+    const cachedTheme = localStorage.getItem('editor-theme-preset') || 'vs-dark';
+    themeSelector.value = cachedTheme;
+    applyTheme(cachedTheme);
+
+    // Apply cached icon preference
+    iconSelector.value = activeIconPack;
+}
+
+// Fire Boot Loader
+bootEditor();

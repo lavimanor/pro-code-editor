@@ -1,8 +1,8 @@
-import { ICON_PACKS } from './icons.js';
+import { api } from './api-core.js';
 
 export function renderFileTree(container, items, selectedPath, expandedFolders, activeIconPackKey, onSelect, onFolderToggle, onDelete, onMove) {
     container.innerHTML = '';
-    const iconPack = ICON_PACKS[activeIconPackKey] || ICON_PACKS['material'];
+    const iconPack = api.icons.get(activeIconPackKey) || api.icons.get('material');
     
     function buildTreeHTML(itemsElement, parentElement, levelPath = 'root') {
         const ul = document.createElement('ul');
@@ -110,7 +110,7 @@ export function renderFileTree(container, items, selectedPath, expandedFolders, 
  */
 export function renderTabs(container, openTabs, activeFileHandle, dirtyFiles, activeIconPackKey, onTabSelect, onTabClose, onTabReorder) {
     container.innerHTML = '';
-    const iconPack = ICON_PACKS[activeIconPackKey] || ICON_PACKS['material'];
+    const iconPack = api.icons.get(activeIconPackKey) || api.icons.get('material');
 
     // Identify tabs by absolute path (falls back to name in the web build) so two
     // files sharing a name in different folders don't collide.

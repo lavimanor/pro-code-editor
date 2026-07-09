@@ -3,7 +3,14 @@ const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const { execFile, exec, spawn } = require('child_process');
-const RUN_CONFIG = require('./run-config');
+// Load default core code execution configurations dynamically
+let RUN_CONFIG_REGISTRY = {};
+try {
+    const defaults = require('./run-config');
+    RUN_CONFIG_REGISTRY = { ...defaults };
+} catch (err) {
+    console.error('Failed to parse default run-config:', err);
+}
 
 const MIME_TYPES = {
     '.html': 'text/html',
@@ -283,7 +290,7 @@ async function runExternal(config, ctx) {
 
 ipcMain.handle('run-file', async (event, filePath, mode) => {
     const ext = path.extname(filePath).replace('.', '').toLowerCase();
-    const config = RUN_CONFIG[ext];
+    const config = RUN_CONFIG_REGISTRY[ext];
     if (!config) {
         return { success: false, output: `[Unsupported] No run configuration exists for .${ext} files.` };
     }
@@ -313,8 +320,78 @@ ipcMain.handle('run-kill', () => {
 
 ipcMain.handle('get-run-langs', () => {
     const langs = {};
-    for (const [ext, cfg] of Object.entries(RUN_CONFIG)) {
+    for (const [ext, cfg] of Object.entries(RUN_CONFIG_REGISTRY)) {
         langs[ext] = cfg.label;
     }
     return langs;
+});
+
+// =====================================================================
+//  Plugin Scanning & Manifest Discovery (Renderer Bridge)
+// =====================================================================
+ipcMain.handle('scan-plugins', async () => {
+    const customDir = path.join(__dirname, 'custom');
+    const extensionsDir = path.join(customDir, 'extensions');
+    const idesDir = path.join(customDir, 'ides');
+
+    // Ensure the baseline custom directory architecture exists
+    if (!fs.existsSync(customDir)) fs.mkdirSync(customDir);
+    if (!fs.existsSync(extensionsDir)) fs.mkdirSync(extensionsDir);
+    if (!fs.existsSync(idesDir)) fs.mkdirSync(idesDir);
+
+    const plugins = [];
+
+    const scanDir = (dirPath, expectedType) => {
+        if (!fs.existsSync(dirPath)) return;
+        const folders = fs.readdirSync(dirPath);
+
+        for (const folder of folders) {
+            const fullPath = path.join(dirPath, folder);
+            const stat = fs.statSync(fullPath);
+
+            if (stat.isDirectory()) {
+                const manifestPath = path.join(fullPath, 'package.json');
+                if (fs.existsSync(manifestPath)) {
+                    try {
+                        const content = fs.readFileSync(manifestPath, 'utf8');
+                        const manifest = JSON.parse(content);
+                        
+                        // Attach metadata fields needed for runtime execution
+                        manifest._localPath = fullPath;
+                        manifest._dirName = folder;
+                        manifest.type = manifest.type || expectedType;
+
+                        // Compute web-safe relative path from the app root directory
+                        const relativePath = path.relative(__dirname, fullPath);
+                        manifest._relativePath = relativePath.replace(/\\/g, '/');
+                        
+                        plugins.push(manifest);
+                    } catch (err) {
+                        plugins.push({
+                            error: `Failed to parse package.json: ${err.message}`,
+                            _dirName: folder,
+                            type: expectedType
+                        });
+                    }
+                } else {
+                    plugins.push({
+                        error: 'Missing package.json file inside plugin directory',
+                        _dirName: folder,
+                        type: expectedType
+                    });
+                }
+            }
+        }
+    };
+
+    scanDir(extensionsDir, 'extension');
+    scanDir(idesDir, 'ide');
+
+    return plugins;
+});
+
+ipcMain.handle('register-runner', (event, ext, config) => {
+    const cleanExt = ext.replace('.', '').toLowerCase();
+    RUN_CONFIG_REGISTRY[cleanExt] = config;
+    return true;
 });

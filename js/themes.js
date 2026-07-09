@@ -1,4 +1,6 @@
-export const THEMES = {
+import { api } from './api-core.js';
+
+const DEFAULT_THEMES = {
     'vs-dark': {
         name: 'VS Code Dark',
         colors: {
@@ -305,8 +307,13 @@ export const THEMES = {
     }
 };
 
+// Register core default themes on startup
+Object.entries(DEFAULT_THEMES).forEach(([key, config]) => {
+    api.themes.register(key, config);
+});
+
 export function applyTheme(themeKey) {
-    const theme = THEMES[themeKey];
+    const theme = api.themes.get(themeKey);
     if (!theme) return;
     
     const rootStyles = document.documentElement.style;
@@ -320,4 +327,19 @@ export function applyTheme(themeKey) {
     }
     
     localStorage.setItem('editor-theme-preset', themeKey);
+}
+
+/**
+ * Renders registered options dynamically to the settings element
+ */
+export function renderThemeSelector(selectorEl) {
+    if (!selectorEl) return;
+    selectorEl.innerHTML = '';
+    const allThemes = api.themes.getAll();
+    Object.entries(allThemes).forEach(([key, theme]) => {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = theme.name;
+        selectorEl.appendChild(opt);
+    });
 }
