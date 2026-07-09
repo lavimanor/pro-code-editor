@@ -10,6 +10,7 @@ import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBefore
 import { initMinimapScroll } from './minimap.js';
 import { getCustomSnippets, saveCustomSnippets, renderSnippetsList } from './snippets.js';
 import { initTerminal, toggleTerminal, updateTerminalPrompt, printToTerminal, appendOutputChunk, setRunState } from './terminal.js';
+import { validateCode } from './validator.js';
 
 // Application State Models
 let rootDirectoryHandle = null;
@@ -25,14 +26,13 @@ const tabContentsCache = new Map();
 let activeSyntaxError = null;
 let syntaxCheckTimeout = null;
 
-// Electron IPC bridge (assigned in the Electron guard below). Module-scoped so
-// helper functions like updateGoLiveVisibility / triggerSyntaxCheck can use it.
+// Electron IPC bridge
 let ipcRenderer = null;
 
-// Extensions the Run button supports — populated from the main-process run registry.
+// Extensions the Run button supports
 let runnableExts = new Set();
 
-// Identify a file by its absolute path (falls back to name in the web build).
+// Identify a file by its absolute path
 const fileKey = (h) => (h && (h.path || h.name)) || '';
 
 // Core Canvas Interface Elements Cache Maps
@@ -104,7 +104,6 @@ function updateGoLiveVisibility(fileName) {
     if (isWebLang && rootDirectoryHandle) {
         btnGoLive.classList.remove('hidden-btn');
     } else {
-        // Stop server automatically if the active tab changes to a non-web language
         if (serverActiveUrl && ipcRenderer) {
             ipcRenderer.invoke('stop-server').then(() => {
                 serverActiveUrl = null;
@@ -119,9 +118,6 @@ const btnRunCode = document.getElementById('btn-run-code');
 
 /**
  * Monitors active tab file extensions to show/hide the "Run" button.
- * Which extensions are runnable comes from the main-process run registry
- * (run-config.js) via the 'get-run-langs' IPC, so adding a language needs
- * no change here.
  */
 function updateRunButtonVisibility(fileName) {
     if (!btnRunCode) return;
@@ -129,6 +125,8 @@ function updateRunButtonVisibility(fileName) {
 
     if (runnableExts.has(ext) && rootDirectoryHandle) {
         btnRunCode.classList.remove('hidden-btn');
+        const langName = ext === 'py' ? 'Python' : ext === 'js' ? 'Node.js' : ext === 'cs' ? 'C#' : ext === 'java' ? 'Java' : '';
+        btnRunCode.title = `Run Active ${langName} Code`;
     } else {
         btnRunCode.classList.add('hidden-btn');
     }
@@ -139,13 +137,11 @@ const isElectronApp = typeof window !== 'undefined' && window.process && window.
 if (isElectronApp) {
     ipcRenderer = window.require('electron').ipcRenderer;
 
-    // Populate the set of runnable extensions from the main-process registry.
     ipcRenderer.invoke('get-run-langs').then((langs) => {
         runnableExts = new Set(Object.keys(langs || {}));
         if (activeFileHandle) updateRunButtonVisibility(activeFileHandle.name);
     }).catch(() => {});
 
-    // Stream live program output from integrated runs into the terminal.
     ipcRenderer.on('run-output', (e, { stream, data }) => {
         appendOutputChunk(data, stream);
     });
@@ -167,7 +163,6 @@ if (isElectronApp) {
     if (btnGoLive) {
         btnGoLive.addEventListener('click', async () => {
             if (serverActiveUrl) {
-                // Stop Server
                 const stopped = await ipcRenderer.invoke('stop-server');
                 if (stopped) {
                     serverActiveUrl = null;
@@ -175,12 +170,10 @@ if (isElectronApp) {
                     btnGoLive.title = 'Run Local Web Server';
                 }
             } else {
-                // Start Server
                 if (rootDirectoryHandle) {
                     const folderPath = rootDirectoryHandle.path;
                     let relativePath = '';
 
-                    // Calculate the complete subfolder path of the active file from the workspace root
                     if (activeFileHandle) {
                         try {
                             const pathParts = await resolveHandle(rootDirectoryHandle, activeFileHandle);
@@ -209,7 +202,6 @@ if (isElectronApp) {
             const ext = activeFileHandle.name.split('.').pop().toLowerCase();
             if (!runnableExts.has(ext)) return;
 
-            // Save first so we run the latest source on disk.
             if (dirtyFiles.has(fileKey(activeFileHandle))) {
                 await handleSaveFile();
             }
@@ -217,7 +209,6 @@ if (isElectronApp) {
             const mode = localStorage.getItem('run-mode-preset') || 'integrated';
 
             if (mode === 'integrated') {
-                // Route terminal input to the running program's stdin.
                 setRunState(true, (line) => ipcRenderer.invoke('run-input', line));
             } else {
                 printToTerminal(`Launching ${activeFileHandle.name} in an external window...`);
@@ -225,7 +216,6 @@ if (isElectronApp) {
 
             const result = await ipcRenderer.invoke('run-file', activeFileHandle.path, mode);
 
-            // For integrated runs, a truthy `running` means output/exit arrive via events.
             if (!result || !result.running) {
                 if (mode === 'integrated') setRunState(false);
                 if (result && result.output) printToTerminal(result.output);
@@ -234,6 +224,17 @@ if (isElectronApp) {
     }
 }
 initMinimapScroll(editor, minimapGutter, minimapIndicator);
+
+// Safety listener for unsaved file contents
+window.addEventListener('beforeunload', (e) => {
+    if (dirtyFiles.size > 0) {
+        const confirmClose = confirm('You have unsaved changes. Are you sure you want to exit?');
+        if (!confirmClose) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    }
+});
 
 // Setup Settings Snippet Manager inputs and list update bindings
 const snippetTrigger = document.getElementById('snippet-trigger');
@@ -255,7 +256,7 @@ if (addSnippetBtn && snippetsList) {
     addSnippetBtn.addEventListener('click', () => {
         const trigger = snippetTrigger.value.trim();
         const lang = snippetLang.value;
-        const body = snippetBody.value.replace(/\\n/g, '\n'); // Support escaped newlines
+        const body = snippetBody.value.replace(/\\n/g, '\n');
 
         if (!trigger || !body) {
             alert('Trigger prefix and expansion body cannot be empty.');
@@ -266,16 +267,14 @@ if (addSnippetBtn && snippetsList) {
         snippets.push({ trigger, lang, body });
         saveCustomSnippets(snippets);
 
-        // Reset input fields
         snippetTrigger.value = '';
         snippetBody.value = '';
         handleRender();
     });
 
-    handleRender(); // Initial UI lists compile
+    handleRender();
 }
 
-// Event Routing Binds
 btnOpenFolder.addEventListener('click', handleOpenFolder);
 btnSaveFile.addEventListener('click', handleSaveFile);
 btnNewFile.addEventListener('click', handleCreateFile);
@@ -295,7 +294,6 @@ actExplorer.addEventListener('click', () => sidebar.classList.toggle('collapsed-
 actSettings.addEventListener('click', toggleSettingsPanel);
 closeSettingsBtn.addEventListener('click', toggleSettingsPanel);
 
-// Dynamic rendering sync loops
 editor.addEventListener('input', () => {
     if (activeFileHandle && !dirtyFiles.has(fileKey(activeFileHandle))) {
         dirtyFiles.add(fileKey(activeFileHandle));
@@ -305,7 +303,16 @@ editor.addEventListener('input', () => {
         tabContentsCache.set(fileKey(activeFileHandle), editor.value);
     }
     runLayoutRenderEngine();
-    triggerSyntaxCheck(); // Evaluate compilation errors in the background
+    triggerSyntaxCheck();
+
+    // Trigger autocomplete suggestions strictly during input events
+    const activeName = activeFileHandle ? activeFileHandle.name : '';
+    const activeKey = fileKey(activeFileHandle);
+    const extraBuffers = [];
+    for (const [key, buf] of tabContentsCache) {
+        if (key !== activeKey && buf) extraBuffers.push(buf);
+    }
+    handleProSenseInput(activeName, extraBuffers);
 });
 
 editor.addEventListener('scroll', () => {
@@ -325,9 +332,7 @@ editor.addEventListener('keyup', (e) => {
     }
 });
 
-// MULTI-FEATURE ENGINE: Keypress routers intercepts
 editor.addEventListener('keydown', (e) => {
-    // Intercept with ProSense key handler first
     if (handleProSenseKeydown(e)) {
         return;
     }
@@ -336,7 +341,6 @@ editor.addEventListener('keydown', (e) => {
     const end = editor.selectionEnd;
     const val = editor.value;
 
-    // FEATURE 1: Tab Key Space Emulation Injection
     if (e.key === 'Tab') {
         e.preventDefault();
         editor.value = val.substring(0, start) + "    " + val.substring(end);
@@ -345,7 +349,6 @@ editor.addEventListener('keydown', (e) => {
         return;
     }
 
-    // FEATURE 2: Intelligent Pair-Closing Match Engines
     const pairs = {
         '(': ')',
         '[': ']',
@@ -380,14 +383,12 @@ editor.addEventListener('keydown', (e) => {
         const cursor = editor.selectionStart;
         const leftText = text.substring(0, cursor);
         
-        // Find the boundary of the tag currently being typed
         const lastLess = leftText.lastIndexOf('<');
         if (lastLess !== -1 && !leftText.substring(lastLess).includes('>')) {
             const tagMatch = leftText.substring(lastLess).match(/^<([a-zA-Z0-9:-]+)/);
             if (tagMatch) {
                 const tagName = tagMatch[1];
                 
-                // Exclude self-closing HTML void elements and closing tags
                 const voidTags = ['img', 'br', 'input', 'hr', 'link', 'meta', 'base', 'col', 'embed', 'source', 'track', 'wbr'];
                 if (!voidTags.includes(tagName.toLowerCase()) && !tagName.startsWith('/')) {
                     e.preventDefault();
@@ -395,7 +396,6 @@ editor.addEventListener('keydown', (e) => {
                     const closingTag = `</${tagName}>`;
                     editor.value = text.substring(0, cursor) + '>' + closingTag + text.substring(cursor);
                     
-                    // Position cursor inside the container tags (directly after '>')
                     editor.selectionStart = editor.selectionEnd = cursor + 1;
                     editor.dispatchEvent(new Event('input'));
                     return;
@@ -418,7 +418,6 @@ editor.addEventListener('keydown', (e) => {
         e.preventDefault();
 
         const trimmedLine = currentLine.trim();
-        // Check standard bracketed/indented block triggers
         const shouldIncreaseIndent = trimmedLine.endsWith('{') || 
                                      trimmedLine.endsWith('[') || 
                                      trimmedLine.endsWith('(') || 
@@ -428,11 +427,10 @@ editor.addEventListener('keydown', (e) => {
         let newCursorOffset = 1 + indent.length;
 
         if (shouldIncreaseIndent) {
-            const extraIndent = '    '; // Standard 4-space indent
+            const extraIndent = '    ';
             insertText = '\n' + indent + extraIndent;
             newCursorOffset = 1 + indent.length + extraIndent.length;
 
-            // Smart bracing format: place closing brace on its own indented line below
             if (trimmedLine.endsWith('{') && rightText.startsWith('}')) {
                 insertText += '\n' + indent;
             }
@@ -463,14 +461,11 @@ function toggleSettingsPanel() {
 }
 
 /**
- * CORE RECONSTRUCTION ENGINE: Updates line numbers column, minimap text,
- * and searches for enclosing brackets around the cursor to apply visual highlights.
- * Incorporates modular HTML & CSS syntax highlighting.
+ * Updates line numbers, minimap elements, and caret tracking elements.
  */
 function runLayoutRenderEngine() {
     const text = editor.value;
 
-    // 1. Line Counter Assembly
     const lines = text.split('\n');
     let gutterHTML = '';
     for (let i = 1; i <= lines.length; i++) {
@@ -478,10 +473,8 @@ function runLayoutRenderEngine() {
     }
     lineGutter.innerHTML = gutterHTML;
 
-    // 2. Refresh Mirror Data to Minimap
     minimapText.textContent = text;
 
-    // 3. Scan & Evaluate Bracket Highlight Index Matches
     let highlightIndices = new Set();
     const cursor = editor.selectionStart;
 
@@ -504,29 +497,16 @@ function runLayoutRenderEngine() {
     }
 
     const activeName = activeFileHandle ? activeFileHandle.name : '';
-    
     const currentWord = getWordBeforeCursor();
     const markerIndex = cursor - currentWord.length;
     
-    // Fetch active custom settings style class
     const stylePreset = localStorage.getItem('error-style-preset') || 'underline';
     const errorClass = stylePreset === 'highlight' ? 'syntax-error-highlight' : 'syntax-error-underline';
 
-    // Compile syntax highlighting along with active diagnostics and caret markers
     const backdropHTML = renderSyntaxHighlighting(text, activeName, highlightIndices, markerIndex, activeSyntaxError, errorClass);
-    
     editorBackdrop.innerHTML = backdropHTML + (text.endsWith('\n') ? '\n ' : ' ');
-
-    // Harvest symbols from other open buffers so ProSense can suggest across files.
-    const activeKey = fileKey(activeFileHandle);
-    const extraBuffers = [];
-    for (const [key, buf] of tabContentsCache) {
-        if (key !== activeKey && buf) extraBuffers.push(buf);
-    }
-    handleProSenseInput(activeName, extraBuffers);
 }
 
-// FIXED: Cleaned up structural definition properties references
 function findMatchingBracketIndex(text, pos, char) {
     const pairs = {
         '(': { open: true, partner: ')', dir: 1 },
@@ -567,7 +547,6 @@ async function refreshExplorer() {
             selectedPath = 'root';
         } else {
             try {
-                // Use the dual-mode helper to resolve child file segments safely
                 const pathParts = await resolveHandle(rootDirectoryHandle, selectedHandle);
                 if (pathParts) {
                     selectedPath = 'root/' + pathParts.join('/');
@@ -609,9 +588,7 @@ async function handleOpenFolder() {
             selectedDirectoryContext = rootDirectoryHandle;
             expandedFolders.clear();
             
-            // Sync terminal prompt with selected local workspace folder path
             updateTerminalPrompt(rootDirectoryHandle.path);
-            
             await refreshExplorer();
         }
     } catch (err) {
@@ -628,6 +605,10 @@ async function handleOpenFile(fileHandle) {
         activeFileHandle = actualHandle;
         selectedHandle = actualHandle;
 
+        if (fileHandle.parent) {
+            selectedDirectoryContext = fileHandle.parent;
+        }
+
         let contents;
         if (tabContentsCache.has(fileKey(actualHandle))) {
             contents = tabContentsCache.get(fileKey(actualHandle));
@@ -642,10 +623,10 @@ async function handleOpenFile(fileHandle) {
         filePathDisplay.textContent = `Workspace / ${activeFileHandle.name}`;
         
         updateGoLiveVisibility(activeFileHandle.name);
-        updateRunButtonVisibility(activeFileHandle.name); // Add this call
+        updateRunButtonVisibility(activeFileHandle.name);
         updateTabsUI();
         runLayoutRenderEngine();
-        triggerSyntaxCheck(); // Add this call
+        triggerSyntaxCheck();
         await refreshExplorer();
     } catch (err) {
         alert('Could not open target resource path stream.');
@@ -656,7 +637,7 @@ async function handleSaveFile() {
     if (!activeFileHandle) return;
     try {
         await saveFileContents(activeFileHandle, editor.value);
-        tabContentsCache.set(fileKey(activeFileHandle), editor.value); // Sync buffer changes
+        tabContentsCache.set(fileKey(activeFileHandle), editor.value);
         dirtyFiles.delete(fileKey(activeFileHandle));
         updateTabsUI();
     } catch (err) {
@@ -666,7 +647,6 @@ async function handleSaveFile() {
 
 async function handleCreateFile() {
     const targetDir = selectedDirectoryContext || rootDirectoryHandle;
-    // Swap native prompt() with our safe async custom modal dialog
     const fileName = await showPrompt(`Create file inside [${targetDir.name}]:`, 'filename.html');
     if (!fileName) return;
     try {
@@ -680,7 +660,6 @@ async function handleCreateFile() {
 
 async function handleCreateFolder() {
     const targetDir = selectedDirectoryContext || rootDirectoryHandle;
-    // Swap native prompt() with our safe async custom modal dialog
     const folderName = await showPrompt(`Create directory inside [${targetDir.name}]:`, 'folder_name');
     if (!folderName) return;
     try {
@@ -702,7 +681,6 @@ async function handleMoveItem(sourceItem, targetDirectoryHandle) {
             const tabIdx = openTabs.findIndex(t => fileKey(t) === sourceKey);
             if (tabIdx !== -1) openTabs[tabIdx] = newFileHandle;
 
-            // Migrate any cached buffer / dirty state to the new location key.
             if (tabContentsCache.has(sourceKey)) {
                 tabContentsCache.set(fileKey(newFileHandle), tabContentsCache.get(sourceKey));
                 tabContentsCache.delete(sourceKey);
@@ -745,15 +723,15 @@ function handleCloseTab(fileHandle) {
             editor.value = '';
             editor.disabled = true;
             btnSaveFile.disabled = true;
-            filePathDisplay.textContent = 'Workspace Closed';
+            filePathDisplay.textContent = rootDirectoryHandle ? `Workspace: ${rootDirectoryHandle.name}` : 'Workspace Closed';
             updateGoLiveVisibility('');
             updateRunButtonVisibility('');
-            triggerSyntaxCheck(); // Add this call (clears error states)
+            triggerSyntaxCheck();
             runLayoutRenderEngine();
         }
     } else if (openTabs.length === 0) {
         updateGoLiveVisibility('');
-        updateRunButtonVisibility(''); // Add this call
+        updateRunButtonVisibility('');
     }
     updateTabsUI();
     refreshExplorer();
@@ -771,9 +749,6 @@ async function handleProjectItemDelete(item) {
     }
 }
 
-/**
- * Splice-swaps dragged tab positions in array when dropped over another tab.
- */
 function handleTabReorder(sourceKey, targetKey) {
     const sourceIdx = openTabs.findIndex(t => fileKey(t) === sourceKey);
     const targetIdx = openTabs.findIndex(t => fileKey(t) === targetKey);
@@ -784,9 +759,6 @@ function handleTabReorder(sourceKey, targetKey) {
     }
 }
 
-/**
- * Displays a custom async modal prompt dialog in place of native window.prompt()
- */
 function showPrompt(title, placeholder = '') {
     return new Promise((resolve) => {
         const modal = document.getElementById('custom-prompt-modal');
@@ -805,7 +777,6 @@ function showPrompt(title, placeholder = '') {
         modalInput.placeholder = placeholder;
         modal.classList.remove('hidden-modal');
         
-        // Auto-focus input field
         setTimeout(() => modalInput.focus(), 50);
 
         function handleOk() {
@@ -842,29 +813,41 @@ function showPrompt(title, placeholder = '') {
 }
 
 /**
- * Triggers an optimized background compilation check for active Python files.
+ * Optimized syntax validation checks. Supports Python, HTML, CSS, and JS.
  */
 function triggerSyntaxCheck() {
-    if (!ipcRenderer || !activeFileHandle || !activeFileHandle.name.endsWith('.py')) {
+    if (!activeFileHandle) {
         activeSyntaxError = null;
         return;
     }
 
+    const ext = activeFileHandle.name.split('.').pop().toLowerCase();
     if (syntaxCheckTimeout) clearTimeout(syntaxCheckTimeout);
     
     syntaxCheckTimeout = setTimeout(async () => {
         try {
-            const result = await ipcRenderer.invoke('check-python-syntax', editor.value);
-            if (result.success) {
-                activeSyntaxError = null;
+            if (ext === 'py' && ipcRenderer) {
+                const result = await ipcRenderer.invoke('check-python-syntax', editor.value);
+                if (result.success) {
+                    activeSyntaxError = null;
+                } else {
+                    activeSyntaxError = result; // { line, offset, msg, text }
+                }
+            } else if (['js', 'mjs', 'cjs', 'html', 'htm', 'css'].includes(ext)) {
+                const errors = validateCode(editor.value, ext);
+                if (errors && errors.length > 0) {
+                    activeSyntaxError = errors[0]; // Highlights the first encountered error
+                } else {
+                    activeSyntaxError = null;
+                }
             } else {
-                activeSyntaxError = result; // { line, offset, msg, text }
+                activeSyntaxError = null;
             }
-            runLayoutRenderEngine(); // Redraw backdrop with highlights
+            runLayoutRenderEngine();
         } catch (err) {
             console.error('Syntax validation failed:', err);
         }
-    }, 250); // 250ms debounce
+    }, 250);
 }
 
 const errorStyleSelector = document.getElementById('error-style-selector');
@@ -876,7 +859,6 @@ if (errorStyleSelector) {
     });
 }
 
-// Run output mode: 'integrated' (in-app terminal) or 'external' (cmd.exe window).
 const runModeSelector = document.getElementById('run-mode-selector');
 if (runModeSelector) {
     runModeSelector.value = localStorage.getItem('run-mode-preset') || 'integrated';

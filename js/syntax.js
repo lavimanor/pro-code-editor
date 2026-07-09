@@ -835,10 +835,14 @@ export function renderSyntaxHighlighting(text, fileName, highlightIndices, curso
 
     // Calculate error highlights boundaries
     let errorRange = null;
-    if (activeSyntaxError && activeSyntaxError.line) {
-        const errorIdx = getGlobalIndexFromLineCol(text, activeSyntaxError.line, activeSyntaxError.offset);
-        if (errorIdx !== -1) {
-            errorRange = getWordRangeAtIndex(text, errorIdx);
+    if (activeSyntaxError) {
+        if (activeSyntaxError.start !== undefined && activeSyntaxError.end !== undefined) {
+            errorRange = { start: activeSyntaxError.start, end: activeSyntaxError.end };
+        } else if (activeSyntaxError.line) {
+            const errorIdx = getGlobalIndexFromLineCol(text, activeSyntaxError.line, activeSyntaxError.offset);
+            if (errorIdx !== -1) {
+                errorRange = getWordRangeAtIndex(text, errorIdx);
+            }
         }
     }
 

@@ -4,9 +4,15 @@ let terminalInput = null;
 let terminalPrompt = null;
 let activePrompt = 'C:\\>';
 
-// Live-run state: when a program is executing, terminal input is piped to its stdin.
+// Live-run state
 let runActive = false;
 let stdinHandler = null;
+
+const isElectron = typeof window !== 'undefined' && window.process && window.process.type;
+let ipcRenderer = null;
+if (isElectron) {
+    ipcRenderer = window.require('electron').ipcRenderer;
+}
 
 /**
  * Initialize terminal elements and events.
@@ -17,15 +23,24 @@ export function initTerminal(panel, output, input, promptEl) {
     terminalInput = input;
     terminalPrompt = promptEl;
 
-    // Listen to Enter key inside command line input
     terminalInput.addEventListener('keydown', (e) => {
+        // Intercept standard Ctrl+C to terminate running processes
+        if (e.ctrlKey && e.key.toLowerCase() === 'c') {
+            if (runActive) {
+                e.preventDefault();
+                appendOutputChunk('^C\n', 'system');
+                if (ipcRenderer) {
+                    ipcRenderer.invoke('run-kill');
+                }
+                return;
+            }
+        }
+
         if (e.key !== 'Enter') return;
 
         const command = terminalInput.value;
         terminalInput.value = '';
 
-        // While a program is running, forward the line to its stdin instead of
-        // treating it as a shell command.
         if (runActive) {
             appendOutputChunk(command + '\n', 'stdin');
             if (stdinHandler) stdinHandler(command);
@@ -35,10 +50,9 @@ export function initTerminal(panel, output, input, promptEl) {
 
         appendCommandLine(command);
 
-        // Built-in mock commands (available when no program is running)
         const cleanCmd = command.trim().toLowerCase();
         if (cleanCmd === 'help') {
-            appendSystemLine('Commands: help, clear, about. While a program runs, whatever you type is sent to its input.');
+            appendSystemLine('Commands: help, clear, about. Press Ctrl+C while a program runs to terminate it.');
         } else if (cleanCmd === 'clear') {
             terminalOutput.innerHTML = '';
         } else if (cleanCmd === 'about') {
@@ -69,16 +83,12 @@ export function toggleTerminal() {
     }
 }
 
-/** Ensure the terminal panel is visible. */
 function ensureTerminalOpen() {
     if (terminalPanel && terminalPanel.classList.contains('hidden-panel')) {
         toggleTerminal();
     }
 }
 
-/**
- * Dynamically updates prompt to display opened directory path.
- */
 export function updateTerminalPrompt(workspacePath) {
     if (!terminalPrompt) return;
     activePrompt = workspacePath ? `${workspacePath}>` : 'Workspace>';
@@ -107,10 +117,6 @@ function scrollToBottom() {
     if (terminalOutput) terminalOutput.scrollTop = terminalOutput.scrollHeight;
 }
 
-/**
- * Appends a raw chunk of program output, preserving whitespace and newlines.
- * `stream` is one of 'stdout' | 'stderr' | 'system' | 'stdin'.
- */
 export function appendOutputChunk(data, stream = 'stdout') {
     if (!terminalOutput) return;
 
@@ -135,10 +141,6 @@ export function appendOutputChunk(data, stream = 'stdout') {
     scrollToBottom();
 }
 
-/**
- * Toggles the running state. When active, the terminal input feeds the program's
- * stdin via `onStdin(lineText)`.
- */
 export function setRunState(active, onStdin) {
     runActive = active;
     stdinHandler = active ? (onStdin || null) : null;
@@ -148,7 +150,7 @@ export function setRunState(active, onStdin) {
     }
     if (terminalInput) {
         terminalInput.placeholder = active
-            ? 'Program running — type input and press Enter…'
+            ? 'Program running — type input and press Enter, or press Ctrl+C to terminate…'
             : '';
     }
     if (active) {
@@ -157,9 +159,6 @@ export function setRunState(active, onStdin) {
     }
 }
 
-/**
- * Prints a status/system line to the terminal (used for launch notices, errors).
- */
 export function printToTerminal(text, type = 'system') {
     if (type === 'system') {
         appendSystemLine(text);

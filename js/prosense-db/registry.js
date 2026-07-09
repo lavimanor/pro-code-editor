@@ -27,22 +27,10 @@ export const LANGUAGE_REGISTRY = {
     'lua': { db: PROSENSE_LUA, parser: 'lua' }
 };
 
-/**
- * Data-driven local-symbol extraction rules per parser id. Each rule:
- *   regex        : a global RegExp; each match yields one identifier
- *   group        : capture group index holding the identifier name
- *   type         : completion type (drives icon + ranking)
- *   insertSuffix : appended to insertText (e.g. '()' for callables)
- *   exclude      : optional list of names to skip (keywords caught by loose regex)
- *
- * Rules are applied in order and share a dedupe set, so earlier rules win
- * (e.g. a name declared as a function won't also be listed as a variable).
- * Adding local-symbol support for a language is now just another entry here.
- */
 const CSTYLE_RULES = [
     { regex: /\b(?:class|struct|interface|enum)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, group: 1, type: 'class' },
-    { regex: /\b(?!(?:if|for|foreach|while|switch|catch)\b)([a-zA-Z_$][a-zA-Z0-9_$<>]*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(/g, group: 2, type: 'function', insertSuffix: '()' },
-    { regex: /\b(?!(?:return|import|using|package|class|struct|interface|enum|new|throw)\b)([a-zA-Z_$][a-zA-Z0-9_$<>]*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:[;=,])/g, group: 2, type: 'variable' }
+    { regex: /\b(?!(?:if|for|foreach|while|switch|catch|return|new|throw|delete|co_return|co_yield|goto)\b)([a-zA-Z_$][a-zA-Z0-9_$<>]*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(/g, group: 2, type: 'function', insertSuffix: '()' },
+    { regex: /\b(?!(?:return|import|using|package|class|struct|interface|enum|new|throw|delete|goto|public|private|protected|static|const|extern|friend|inline|virtual|explicit|typedef)\b)([a-zA-Z_$][a-zA-Z0-9_$<>]*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:[;=,])/g, group: 2, type: 'variable' }
 ];
 
 export const PARSER_RULES = {

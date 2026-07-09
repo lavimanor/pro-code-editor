@@ -1,31 +1,21 @@
 /**
- * Advanced Structural Syntax Validator (With Real-Time Console Logging)
+ * Advanced Structural Syntax Validator
  */
 export function validateCode(text, ext) {
-    console.log(`[ProSense Validator] validateCode triggered. Extension: "${ext}", Characters: ${text.length}`);
     const errors = [];
-    if (!text) {
-        console.log(`[ProSense Validator] Empty text buffer. Returning no errors.`);
-        return errors;
-    }
+    if (!text) return errors;
 
     if (ext === 'js' || ext === 'mjs' || ext === 'cjs') {
-        console.log(`[ProSense Validator] Invoking JavaScript parsers...`);
         validateJSBraces(text, errors);
         validateQuotes(text, errors);
         validateJSNative(text, errors);
     } else if (ext === 'css') {
-        console.log(`[ProSense Validator] Invoking CSS parsers...`);
         validateCSSStructure(text, errors);
         validateQuotes(text, errors);
     } else if (ext === 'html' || ext === 'htm') {
-        console.log(`[ProSense Validator] Invoking HTML tag-stack parsers...`);
         validateHTMLTags(text, errors);
-    } else {
-        console.log(`[ProSense Validator] Extension "${ext}" is not registered for active syntax validation.`);
     }
 
-    console.log(`[ProSense Validator] Complete. Total structural errors detected:`, errors.length, errors);
     return errors;
 }
 
@@ -116,79 +106,101 @@ function validateJSBraces(text, errors) {
 }
 
 /**
- * Checks for unclosed single/double quotes on a single line.
+ * Checks for unclosed single/double quotes, ignoring comments.
  */
 function validateQuotes(text, errors) {
-    const lines = text.split('\n');
-    let offset = 0;
+    let inQuote = null;
+    let quoteStart = -1;
+    let isComment = false;
+    let isBlockComment = false;
 
-    lines.forEach(line => {
-        let inQuote = null;
-        let quoteStart = -1;
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        const nextChar = text[i + 1];
 
-        for (let i = 0; i < line.length; i++) {
-            const char = line[i];
-            if (inQuote) {
-                if (char === '\\') {
-                    i++;
-                } else if (char === inQuote) {
-                    inQuote = null;
-                }
-            } else {
-                if (char === '"' || char === "'") {
-                    inQuote = char;
-                    quoteStart = offset + i;
-                }
+        if (isComment) {
+            if (char === '\n') {
+                isComment = false;
             }
+            continue;
+        }
+        if (isBlockComment) {
+            if (char === '*' && nextChar === '/') {
+                isBlockComment = false;
+                i++;
+            }
+            continue;
         }
 
         if (inQuote) {
-            errors.push({
-                start: quoteStart,
-                end: offset + line.length,
-                message: `Unclosed string literal`
-            });
+            if (char === '\\') {
+                i++; // Skip escape character sequence
+            } else if (char === inQuote) {
+                inQuote = null;
+            } else if (char === '\n' && inQuote !== '`') {
+                // Quotes cannot span multiple lines in standard JS without a backslash escape
+                errors.push({
+                    start: quoteStart,
+                    end: i,
+                    message: `Unclosed string literal`
+                });
+                inQuote = null;
+            }
+            continue;
         }
 
-        offset += line.length + 1;
-    });
+        if (char === '/' && nextChar === '/') {
+            isComment = true;
+            i++;
+            continue;
+        }
+        if (char === '/' && nextChar === '*') {
+            isBlockComment = true;
+            i++;
+            continue;
+        }
+
+        if (char === '"' || char === "'" || char === '`') {
+            inQuote = char;
+            quoteStart = i;
+        }
+    }
+
+    if (inQuote) {
+        errors.push({
+            start: quoteStart,
+            end: text.length,
+            message: `Unclosed string literal`
+        });
+    }
 }
 
 /**
- * Executes a native compile check on JS using the browser's V8 engine and parses
- * the stack trace to pinpoint the exact character index of the syntax error.
+ * Executes a native JS compile check and catches coordinate syntax errors.
  */
 function validateJSNative(text, errors) {
-    if (errors.length > 0) return; // Prioritize structural bracket mismatch logs
+    if (errors.length > 0) return;
 
     try {
         new Function(text);
     } catch (err) {
         if (err.name === 'SyntaxError' && err.stack) {
-            console.log(`[ProSense Validator] V8 caught compile-time SyntaxError stack:\n`, err.stack);
-            
-            // Extract the anonymous compilation coordinates (<anonymous>:line:col) from the stack
             const stackMatch = err.stack.match(/<anonymous>:(\d+):(\d+)/);
             if (stackMatch) {
                 const v8Line = parseInt(stackMatch[1], 10);
                 const v8Col = parseInt(stackMatch[2], 10);
-                
-                // Subtract 2 to account for V8's "function anonymous() {" wrapper header line
                 const realLineIndex = v8Line - 2; 
 
                 const lines = text.split('\n');
                 if (realLineIndex >= 0 && realLineIndex < lines.length) {
-                    // Find the absolute character offset up to the error line
                     let startOffset = 0;
                     for (let j = 0; j < realLineIndex; j++) {
                         startOffset += lines[j].length + 1;
                     }
 
-                    const col = v8Col - 1; // 0-indexed column
+                    const col = v8Col - 1;
                     const errorStart = startOffset + Math.max(0, col);
                     const lineText = lines[realLineIndex];
-                    
-                    // Highlight from the error column to the end of that specific line
                     const errorEnd = Math.min(startOffset + lineText.length, errorStart + Math.max(1, lineText.length - col));
 
                     errors.push({
@@ -201,7 +213,6 @@ function validateJSNative(text, errors) {
             }
         }
         
-        // Fallback to highlighting whole file if stack trace cannot be parsed
         if (err.name === 'SyntaxError') {
             errors.push({
                 start: 0,
@@ -260,7 +271,23 @@ function validateHTMLTags(text, errors) {
         const tagStartIdx = text.indexOf('<', index);
         if (tagStartIdx === -1) break;
 
-        const tagEndIdx = text.indexOf('>', tagStartIdx + 1);
+        // Respect quote bounds inside attributes while scanning for tag boundaries
+        let tagEndIdx = -1;
+        let inQuote = null;
+        for (let i = tagStartIdx + 1; i < text.length; i++) {
+            const char = text[i];
+            if (inQuote) {
+                if (char === inQuote) inQuote = null;
+            } else {
+                if (char === '"' || char === "'") {
+                    inQuote = char;
+                } else if (char === '>') {
+                    tagEndIdx = i;
+                    break;
+                }
+            }
+        }
+
         if (tagEndIdx === -1) {
             errors.push({
                 start: tagStartIdx,
@@ -300,7 +327,7 @@ function validateHTMLTags(text, errors) {
             }
         } else if (!tagContent.startsWith('!') && !tagContent.endsWith('/')) {
             const tagName = tagContent.split(/\s+/)[0].toLowerCase();
-            if (!voidTags.includes(tagName)) {
+            if (tagName && !voidTags.includes(tagName)) {
                 stack.push({ name: tagName, index: tagStartIdx });
             }
         }

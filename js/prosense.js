@@ -75,7 +75,14 @@ function insertSelection(item) {
 
     editorEl.value = text.substring(0, start) + item.insertText + text.substring(end);
 
-    const newCursorPos = start + item.insertText.length;
+    let newCursorPos = start + item.insertText.length;
+    if (item.insertText.endsWith('()')) {
+        newCursorPos -= 1; // Position cursor inside the parentheses
+    } else if (item.insertText.endsWith('{}')) {
+        newCursorPos -= 1;
+    } else if (item.insertText.endsWith('[]')) {
+        newCursorPos -= 1;
+    }
     editorEl.selectionStart = editorEl.selectionEnd = newCursorPos;
 
     recordUsage(item.label);

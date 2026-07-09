@@ -26,9 +26,8 @@ function createWindow() {
     const win = new BrowserWindow({
         width: 1200,
         height: 800,
-        // frame: false,
         backgroundColor: '#1e1e1e',
-        icon: path.join(__dirname, 'icon.png'), // Binds the taskbar and system window icon
+        icon: path.join(__dirname, 'icon.png'),
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false,
@@ -36,7 +35,6 @@ function createWindow() {
         }
     });
 
-    // Menu.setApplicationMenu(null);
     win.loadFile('index.html');
 }
 
@@ -97,7 +95,6 @@ ipcMain.handle('start-server', (event, folderPath, activeFileName) => {
             let reqUrl = req.url.split('?')[0];
             if (reqUrl === '/') reqUrl = '/index.html';
 
-            // Safe URI decoding to handle spaces (%20) and special characters
             let decodedUrl = reqUrl;
             try {
                 decodedUrl = decodeURIComponent(reqUrl);
@@ -105,7 +102,13 @@ ipcMain.handle('start-server', (event, folderPath, activeFileName) => {
                 console.error('Failed to decode URI:', e);
             }
 
-            const filePath = path.join(folderPath, decodedUrl);
+            // Secure target paths against directory traversal exploits
+            const filePath = path.resolve(folderPath, decodedUrl.replace(/^\//, ''));
+            if (!filePath.startsWith(path.resolve(folderPath))) {
+                res.writeHead(403, { 'Content-Type': 'text/plain' });
+                res.end('403 Forbidden');
+                return;
+            }
             
             fs.readFile(filePath, (err, content) => {
                 if (err) {
@@ -122,8 +125,12 @@ ipcMain.handle('start-server', (event, folderPath, activeFileName) => {
             });
         });
 
+        webServer.on('error', (err) => {
+            console.error('Local server error:', err);
+            resolve(null);
+        });
+
         webServer.listen(5500, () => {
-            // Open the browser directly to your active web file, avoiding blank 404s
             const targetPath = activeFileName ? `/${activeFileName}` : '';
             const serverUrl = `http://localhost:5500${targetPath}`;
             
@@ -151,27 +158,8 @@ ipcMain.handle('stop-server', () => {
 //  Code Execution Engine (config-driven, see run-config.js)
 // =====================================================================
 
-// Currently executing child process for the integrated terminal (single active run).
 let activeChild = null;
 
-/**
- * Locates a usable C# compiler (csc.exe). Falls back to the PATH binary.
- */
-function resolveCsc() {
-    const winDir = process.env.windir || 'C:\\Windows';
-    const candidates = [
-        path.join(winDir, 'Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe'),
-        path.join(winDir, 'Microsoft.NET\\Framework\\v4.0.30319\\csc.exe')
-    ];
-    for (const p of candidates) {
-        if (fs.existsSync(p)) return p;
-    }
-    return 'csc'; // Rely on PATH as a last resort
-}
-
-/**
- * Builds the placeholder substitution context for a source file.
- */
 function buildContext(filePath) {
     const dir = path.dirname(filePath);
     const ext = path.extname(filePath);
@@ -192,25 +180,14 @@ function substitute(value, ctx) {
         .replace(/\{exe\}/g, ctx.exe);
 }
 
-/** Resolves a candidate { cmd, args } with placeholders + special tokens substituted. */
 function resolveCandidate(candidate, ctx) {
-    let cmd = candidate.cmd;
-    if (cmd === '__csc__') {
-        cmd = resolveCsc();
-    } else {
-        cmd = substitute(cmd, ctx);
-    }
+    let cmd = substitute(candidate.cmd, ctx);
     return {
         cmd,
         args: (candidate.args || []).map(a => substitute(a, ctx))
     };
 }
 
-/**
- * Spawns the first candidate in the list that successfully launches (PATH fallback),
- * streaming stdout/stderr to `send`. Resolves with the live child process, or rejects
- * if none of the candidates could be started.
- */
 function launchStep(candidates, ctx, send) {
     return new Promise((resolve, reject) => {
         let idx = 0;
@@ -237,7 +214,7 @@ function launchStep(candidates, ctx, send) {
             });
             child.once('error', (err) => {
                 if (!launched) {
-                    attempt(); // Binary missing / ENOENT -> try the next candidate
+                    attempt();
                 } else {
                     send('stderr', `\n[Process error] ${err.message}\n`);
                 }
@@ -247,10 +224,6 @@ function launchStep(candidates, ctx, send) {
     });
 }
 
-/**
- * Runs a file inside the integrated terminal: compile steps (each must exit 0) then run,
- * streaming all output back to the renderer via 'run-output' / 'run-exit' events.
- */
 async function runIntegrated(event, config, ctx) {
     if (activeChild) {
         try { activeChild.kill(); } catch (e) { /* ignore */ }
@@ -263,7 +236,6 @@ async function runIntegrated(event, config, ctx) {
         }
     };
 
-    // Compile phase
     if (config.compile) {
         for (const stepCandidates of config.compile) {
             send('system', `[Compiling ${config.label}...]\n`);
@@ -281,7 +253,6 @@ async function runIntegrated(event, config, ctx) {
         }
     }
 
-    // Run phase
     send('system', `[Running ${config.label}...]\n`);
     let runChild;
     try {
@@ -301,18 +272,11 @@ async function runIntegrated(event, config, ctx) {
     return { success: true, running: true };
 }
 
-/** Windows-safe quoting of a single token. */
 function quoteWin(s) {
     return `"${String(s).replace(/"/g, '')}"`;
 }
 
-/**
- * Runs a file in an external cmd.exe window. Compiles first (blocking) if needed.
- * Uses `cmd /s` so only the outermost quotes are stripped — this makes paths with
- * spaces safe (fixes the old broken nested-quote fallback).
- */
 async function runExternal(config, ctx) {
-    // Compile phase (blocking) — try candidates until one launches.
     if (config.compile) {
         for (const stepCandidates of config.compile) {
             const result = await new Promise((resolve) => {
@@ -340,7 +304,6 @@ async function runExternal(config, ctx) {
     const runCand = resolveCandidate(config.run[0], ctx);
     const inner = [quoteWin(runCand.cmd), ...runCand.args.map(quoteWin)].join(' ');
 
-    // Detect input-pausing statements so the window pauses before closing.
     let pause = false;
     try {
         const code = fs.readFileSync(ctx.file, 'utf8');
@@ -375,7 +338,6 @@ ipcMain.handle('run-file', async (event, filePath, mode) => {
     return runIntegrated(event, config, ctx);
 });
 
-// Feed a line of text to the running program's stdin (integrated terminal input).
 ipcMain.handle('run-input', (event, text) => {
     if (activeChild && activeChild.stdin && activeChild.stdin.writable) {
         activeChild.stdin.write(text + '\n');
@@ -384,7 +346,6 @@ ipcMain.handle('run-input', (event, text) => {
     return false;
 });
 
-// Terminate the active integrated run.
 ipcMain.handle('run-kill', () => {
     if (activeChild) {
         try { activeChild.kill(); } catch (e) { /* ignore */ }
@@ -394,7 +355,6 @@ ipcMain.handle('run-kill', () => {
     return false;
 });
 
-// Report which extensions are runnable (ext -> label) — single source of truth for the UI.
 ipcMain.handle('get-run-langs', () => {
     const langs = {};
     for (const [ext, cfg] of Object.entries(RUN_CONFIG)) {
@@ -406,8 +366,6 @@ ipcMain.handle('get-run-langs', () => {
 ipcMain.handle('check-python-syntax', (event, code) => {
     return new Promise((resolve) => {
         const pythonCmd = 'python';
-        
-        // Inline lightweight AST compiler that accepts standard inputs and dumps JSON outputs
         const pyScript = `
 import ast, sys, json
 try:
@@ -426,41 +384,53 @@ except Exception as e:
 
         const { spawn } = require('child_process');
         const child = spawn(pythonCmd, ['-c', pyScript]);
-        
         let outputData = '';
-        
-        child.stdin.write(code);
-        child.stdin.end();
-        
-        child.stdout.on('data', (data) => {
-            outputData += data.toString();
+
+        child.on('error', (err) => {
+            tryFallback();
         });
-        
-        child.on('close', (exitCode) => {
-            try {
-                const parsed = JSON.parse(outputData.trim());
-                resolve(parsed);
-            } catch (err) {
-                // Fallback attempt using standard global 'py' command on Windows
-                const fallbackChild = spawn('py', ['-c', pyScript]);
-                let fbOutput = '';
-                
-                fallbackChild.stdin.write(code);
-                fallbackChild.stdin.end();
-                
-                fallbackChild.stdout.on('data', (data) => {
-                    fbOutput += data.toString();
-                });
-                
-                fallbackChild.on('close', () => {
-                    try {
-                        const parsedFb = JSON.parse(fbOutput.trim());
-                        resolve(parsedFb);
-                    } catch (fbErr) {
-                        resolve({ success: true }); // Fallback silent on failure
-                    }
-                });
-            }
-        });
+
+        function tryFallback() {
+            const fallbackChild = spawn('py', ['-c', pyScript]);
+            let fbOutput = '';
+
+            fallbackChild.on('error', (fbErr) => {
+                resolve({ success: true });
+            });
+
+            fallbackChild.stdin.write(code);
+            fallbackChild.stdin.end();
+
+            fallbackChild.stdout.on('data', (data) => {
+                fbOutput += data.toString();
+            });
+
+            fallbackChild.on('close', () => {
+                try {
+                    const parsedFb = JSON.parse(fbOutput.trim());
+                    resolve(parsedFb);
+                } catch (fbErr) {
+                    resolve({ success: true });
+                }
+            });
+        }
+
+        if (child.pid) {
+            child.stdin.write(code);
+            child.stdin.end();
+
+            child.stdout.on('data', (data) => {
+                outputData += data.toString();
+            });
+
+            child.on('close', (exitCode) => {
+                try {
+                    const parsed = JSON.parse(outputData.trim());
+                    resolve(parsed);
+                } catch (err) {
+                    tryFallback();
+                }
+            });
+        }
     });
 });
