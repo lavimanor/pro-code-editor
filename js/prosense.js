@@ -1,4 +1,4 @@
-import { LANGUAGE_REGISTRY } from './prosense-db/registry.js';
+import { LANGUAGE_REGISTRY, PARSER_RULES } from './prosense-db/registry.js';
 import { getCustomSnippets } from './snippets.js';
 
 let prosenseEl = null;
@@ -8,6 +8,37 @@ let activeIndex = 0;
 let filteredList = [];
 let isOpen = false;
 let delayTimeout = null;
+let latestExtraBuffers = [];
+
+// Completion type -> icon glyph + color. Data-driven (replaces a nested ternary).
+const TYPE_META = {
+    tag:       { icon: 'fa-code',    color: '#e34c26' },
+    attribute: { icon: 'fa-cube',    color: '#2196f3' },
+    property:  { icon: 'fa-wrench',  color: '#4caf50' },
+    variable:  { icon: 'fa-cube',    color: '#9c27b0' },
+    class:     { icon: 'fa-shapes',  color: '#ff9800' },
+    function:  { icon: 'fa-bolt',    color: '#ffeb3b' },
+    keyword:   { icon: 'fa-key',     color: '#569cd6' },
+    snippet:   { icon: 'fa-scroll',  color: '#c586c0' }
+};
+const DEFAULT_TYPE_META = { icon: 'fa-bolt', color: '#ffeb3b' };
+
+// Relevance boost by where a completion came from (local file > db > other files).
+const SOURCE_BOOST = { local: 220, custom: 150, db: 0, extern: -90 };
+
+// --- Usage-frequency memory (breaks ties toward what you actually pick) ---
+function getUsageMap() {
+    try {
+        return JSON.parse(localStorage.getItem('prosense-usage') || '{}');
+    } catch (e) {
+        return {};
+    }
+}
+function recordUsage(label) {
+    const map = getUsageMap();
+    map[label] = (map[label] || 0) + 1;
+    try { localStorage.setItem('prosense-usage', JSON.stringify(map)); } catch (e) { /* ignore */ }
+}
 
 export function initProSense(editor, surface) {
     editorEl = editor;
@@ -43,10 +74,11 @@ function insertSelection(item) {
     const text = editorEl.value;
 
     editorEl.value = text.substring(0, start) + item.insertText + text.substring(end);
-    
+
     const newCursorPos = start + item.insertText.length;
     editorEl.selectionStart = editorEl.selectionEnd = newCursorPos;
 
+    recordUsage(item.label);
     hideProSense();
     editorEl.dispatchEvent(new Event('input'));
     editorEl.focus();
@@ -93,18 +125,9 @@ function renderWidget() {
     filteredList.forEach((item, idx) => {
         const li = document.createElement('li');
         li.className = `prosense-item ${idx === activeIndex ? 'active' : ''}`;
-        
-        const typeIcon = item.type === 'tag' 
-            ? '<i class="fa-solid fa-code" style="color: #e34c26; font-size: 11px;"></i>' 
-            : (item.type === 'attribute' 
-                ? '<i class="fa-solid fa-cube" style="color: #2196f3; font-size: 11px;"></i>' 
-                : (item.type === 'property'
-                    ? '<i class="fa-solid fa-wrench" style="color: #4caf50; font-size: 11px;"></i>'
-                    : (item.type === 'variable'
-                        ? '<i class="fa-solid fa-cube" style="color: #9c27b0; font-size: 11px;"></i>'
-                        : (item.type === 'class'
-                            ? '<i class="fa-solid fa-shapes" style="color: #ff9800; font-size: 11px;"></i>'
-                            : '<i class="fa-solid fa-bolt" style="color: #ffeb3b; font-size: 11px;"></i>'))));
+
+        const meta = TYPE_META[item.type] || DEFAULT_TYPE_META;
+        const typeIcon = `<i class="fa-solid ${meta.icon}" style="color: ${meta.color}; font-size: 11px;"></i>`;
 
         li.innerHTML = `<span class="prosense-type-icon">${typeIcon}</span> <span class="prosense-label">${item.label}</span>`;
         
@@ -151,119 +174,75 @@ export function handleProSenseKeydown(e) {
 }
 
 /**
- * Dynamic parser module to extract declared variables, methods, and structures.
+ * Config-driven parser: applies the PARSER_RULES for the given parser id to extract
+ * declared variables, functions and types. Adding a language is a config edit in
+ * registry.js — no code change here. `sourceTag` marks provenance for ranking.
  */
-function extractFileIdentifiers(text, parserType) {
+function extractFileIdentifiers(text, parserType, sourceTag = 'local') {
+    const rules = PARSER_RULES[parserType];
+    if (!rules) return [];
+
     const identifiers = [];
     const seen = new Set();
-    let match;
 
-    if (parserType === 'js') {
-        const varRegex = /\b(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
-        while ((match = varRegex.exec(text)) !== null) {
-            const name = match[1];
-            if (!seen.has(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name, type: 'variable' });
-            }
-        }
-        const funcRegex = /\bfunction\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
-        while ((match = funcRegex.exec(text)) !== null) {
-            const name = match[1];
-            if (!seen.has(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name + '()', type: 'function' });
-            }
-        }
-        const classRegex = /\bclass\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
-        while ((match = classRegex.exec(text)) !== null) {
-            const name = match[1];
-            if (!seen.has(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name, type: 'class' });
-            }
-        }
-    } else if (parserType === 'java' || parserType === 'csharp' || parserType === 'c' || parserType === 'cpp') {
-        // Shared C-Style Language Parser (Java, C#, C, C++)
-        const classRegex = /\b(?:class|struct|interface|enum)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
-        while ((match = classRegex.exec(text)) !== null) {
-            const name = match[1];
-            if (!seen.has(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name, type: 'class' });
-            }
-        }
-        const methodRegex = /\b(?!(?:if|for|foreach|while|switch|catch)\b)([a-zA-Z_$][a-zA-Z0-9_$<>]*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(/g;
-        while ((match = methodRegex.exec(text)) !== null) {
-            const name = match[2];
-            if (!seen.has(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name + '()', type: 'function' });
-            }
-        }
-        const varRegex = /\b(?!(?:return|import|using|package|class|struct|interface|enum|new|throw)\b)([a-zA-Z_$][a-zA-Z0-9_$<>]*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:[;=,])/g;
-        while ((match = varRegex.exec(text)) !== null) {
-            const name = match[2];
-            if (!seen.has(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name, type: 'variable' });
-            }
-        }
-    } else if (parserType === 'python') {
-        // Parse Python classes: class Name
-        const classRegex = /\bclass\s+([a-zA-Z_][a-zA-Z0-9_]*)/g;
-        while ((match = classRegex.exec(text)) !== null) {
-            const name = match[1];
-            if (!seen.has(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name, type: 'class' });
-            }
-        }
-
-        // Parse Python function declarations: def name(
-        const funcRegex = /\bdef\s+([a-zA-Z_][a-zA-Z0-9_]*)/g;
-        while ((match = funcRegex.exec(text)) !== null) {
-            const name = match[1];
-            if (!seen.has(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name + '()', type: 'function' });
-            }
-        }
-
-        // Parse Python variable definitions: name = value (excluding comparisons/operators)
-        const varRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?![=])/g;
-        while ((match = varRegex.exec(text)) !== null) {
-            const name = match[1];
-            // Exclude control flow keywords from variable suggestions
-            if (!seen.has(name) && !['if', 'elif', 'for', 'while', 'return', 'print'].includes(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name, type: 'variable' });
-            }
-        }
-    } else if (parserType === 'lua') {
-        // Parse Lua functions: function name() or local function name()
-        const funcRegex = /\bfunction\s+([a-zA-Z_][a-zA-Z0-9_]*)/g;
-        while ((match = funcRegex.exec(text)) !== null) {
-            const name = match[1];
-            if (!seen.has(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name + '()', type: 'function' });
-            }
-        }
-
-        // Parse Lua variable declarations: local name = value or name = value
-        const varRegex = /\b(?:local\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?![=])/g;
-        while ((match = varRegex.exec(text)) !== null) {
-            const name = match[1];
-            // Exclude control flow keywords from variable lists
-            if (!seen.has(name) && !['if', 'for', 'while', 'return', 'print', 'local', 'function', 'end'].includes(name)) {
-                seen.add(name);
-                identifiers.push({ label: name, insertText: name, type: 'variable' });
-            }
+    for (const rule of rules) {
+        // Fresh RegExp so lastIndex never leaks between calls.
+        const re = new RegExp(rule.regex.source, rule.regex.flags);
+        let match;
+        while ((match = re.exec(text)) !== null) {
+            const name = match[rule.group];
+            if (!name || seen.has(name)) continue;
+            if (rule.exclude && rule.exclude.includes(name)) continue;
+            seen.add(name);
+            identifiers.push({
+                label: name,
+                insertText: name + (rule.insertSuffix || ''),
+                type: rule.type,
+                source: sourceTag
+            });
         }
     }
 
     return identifiers;
+}
+
+/**
+ * Fuzzy match score for `label` against typed `query`. Returns null when the query
+ * chars are not all present (in order). Higher is better. Rewards prefix matches,
+ * contiguous runs, and word boundaries (camelCase / underscore).
+ */
+function scoreMatch(label, query) {
+    if (!query) return 0;
+    const l = label.toLowerCase();
+    const q = query.toLowerCase();
+
+    if (l === q) return 1000;
+    if (l.startsWith(q)) return 600 - (label.length - query.length);
+
+    let score = 0;
+    let qi = 0;
+    let streak = 0;
+    let firstIdx = -1;
+
+    for (let li = 0; li < l.length && qi < q.length; li++) {
+        if (l[li] === q[qi]) {
+            if (firstIdx === -1) firstIdx = li;
+            streak++;
+            score += 8 + streak * 2; // reward contiguous runs
+            const prev = label[li - 1];
+            const isBoundary = li === 0 || prev === '_' ||
+                (label[li] >= 'A' && label[li] <= 'Z' && prev >= 'a' && prev <= 'z');
+            if (isBoundary) score += 14;
+            qi++;
+        } else {
+            streak = 0;
+        }
+    }
+
+    if (qi < q.length) return null; // not a subsequence match
+    score -= firstIdx;                     // earlier first hit is better
+    score -= (label.length - query.length) * 0.5; // prefer shorter labels
+    return score;
 }
 
 function evaluateProSense(fileName) {
@@ -276,19 +255,23 @@ function evaluateProSense(fileName) {
         return;
     }
 
-    const localCompletions = extractFileIdentifiers(editorEl.value, config.parser);
-    
-    // Dynamically retrieve user-defined custom snippets matching current scope
-    const customSnippetsRaw = getCustomSnippets();
-    const customSnippets = customSnippetsRaw
-        .filter(s => s.lang === 'all' || s.lang === ext)
-        .map(s => ({
-            label: s.trigger,
-            insertText: s.body,
-            type: 'snippet'
-        }));
+    // Symbols from the current file (source 'local') and from other open buffers ('extern').
+    const localCompletions = extractFileIdentifiers(editorEl.value, config.parser, 'local');
+    const externCompletions = [];
+    const localLabels = new Set(localCompletions.map(c => c.label));
+    for (const buf of latestExtraBuffers) {
+        for (const item of extractFileIdentifiers(buf, config.parser, 'extern')) {
+            if (!localLabels.has(item.label)) externCompletions.push(item);
+        }
+    }
 
-    const completions = [...config.db, ...localCompletions, ...customSnippets];
+    // User-defined custom snippets scoped to this language.
+    const customSnippets = getCustomSnippets()
+        .filter(s => s.lang === 'all' || s.lang === ext)
+        .map(s => ({ label: s.trigger, insertText: s.body, type: 'snippet', source: 'custom' }));
+
+    const dbCompletions = config.db.map(c => ({ ...c, source: c.source || 'db' }));
+    const completions = [...dbCompletions, ...localCompletions, ...externCompletions, ...customSnippets];
 
     const word = getWordBeforeCursor();
     if (!word || completions.length === 0) {
@@ -296,12 +279,38 @@ function evaluateProSense(fileName) {
         return;
     }
 
-    filteredList = completions.filter(item => 
-        item.label.toLowerCase().startsWith(word.toLowerCase())
-    );
+    // If the exact word is already fully typed, there's nothing left to complete.
+    const wordLower = word.toLowerCase();
+    if (completions.some(item => item.label.toLowerCase() === wordLower)) {
+        hideProSense();
+        return;
+    }
 
-    const hasExactMatch = filteredList.some(item => item.label.toLowerCase() === word.toLowerCase());
-    if (hasExactMatch || filteredList.length === 0) {
+    // Member access context: after a '.', bias toward members over bare keywords.
+    const cursor = editorEl.selectionStart;
+    const charBefore = editorEl.value[cursor - word.length - 1];
+    const isMemberAccess = charBefore === '.';
+
+    const usage = getUsageMap();
+
+    filteredList = completions
+        .map(item => {
+            const base = scoreMatch(item.label, word);
+            if (base === null) return null;
+            let score = base + (SOURCE_BOOST[item.source] || 0);
+            score += (usage[item.label] || 0) * 8; // frequency tie-breaker
+            if (isMemberAccess) {
+                if (item.type === 'keyword') score -= 800;
+                else if (['function', 'property', 'variable'].includes(item.type)) score += 40;
+            }
+            return { item, score };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 50)
+        .map(entry => entry.item);
+
+    if (filteredList.length === 0) {
         hideProSense();
         return;
     }
@@ -311,13 +320,15 @@ function evaluateProSense(fileName) {
     renderWidget();
 }
 
-export function handleProSenseInput(fileName) {
+export function handleProSenseInput(fileName, extraBuffers = []) {
     if (delayTimeout) clearTimeout(delayTimeout);
 
     if (localStorage.getItem('prosense-enabled') === 'false') {
         hideProSense();
         return;
     }
+
+    latestExtraBuffers = extraBuffers;
 
     delayTimeout = setTimeout(() => {
         evaluateProSense(fileName);

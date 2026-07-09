@@ -15,14 +15,50 @@ export const LANGUAGE_REGISTRY = {
     'js': { db: PROSENSE_JS, parser: 'js' },
     'mjs': { db: PROSENSE_JS, parser: 'js' },
     'cjs': { db: PROSENSE_JS, parser: 'js' },
-    'java': { db: PROSENSE_JAVA, parser: 'java' },
-    'cs': { db: PROSENSE_CS, parser: 'csharp' },
+    'java': { db: PROSENSE_JAVA, parser: 'cstyle' },
+    'cs': { db: PROSENSE_CS, parser: 'cstyle' },
     'py': { db: PROSENSE_PY, parser: 'python' },
-    'c': { db: PROSENSE_C, parser: 'c' },
-    'h': { db: PROSENSE_C, parser: 'c' },
-    'cpp': { db: PROSENSE_CPP, parser: 'cpp' },
-    'hpp': { db: PROSENSE_CPP, parser: 'cpp' },
-    'cc': { db: PROSENSE_CPP, parser: 'cpp' },
-    'cxx': { db: PROSENSE_CPP, parser: 'cpp' },
+    'c': { db: PROSENSE_C, parser: 'cstyle' },
+    'h': { db: PROSENSE_C, parser: 'cstyle' },
+    'cpp': { db: PROSENSE_CPP, parser: 'cstyle' },
+    'hpp': { db: PROSENSE_CPP, parser: 'cstyle' },
+    'cc': { db: PROSENSE_CPP, parser: 'cstyle' },
+    'cxx': { db: PROSENSE_CPP, parser: 'cstyle' },
     'lua': { db: PROSENSE_LUA, parser: 'lua' }
+};
+
+/**
+ * Data-driven local-symbol extraction rules per parser id. Each rule:
+ *   regex        : a global RegExp; each match yields one identifier
+ *   group        : capture group index holding the identifier name
+ *   type         : completion type (drives icon + ranking)
+ *   insertSuffix : appended to insertText (e.g. '()' for callables)
+ *   exclude      : optional list of names to skip (keywords caught by loose regex)
+ *
+ * Rules are applied in order and share a dedupe set, so earlier rules win
+ * (e.g. a name declared as a function won't also be listed as a variable).
+ * Adding local-symbol support for a language is now just another entry here.
+ */
+const CSTYLE_RULES = [
+    { regex: /\b(?:class|struct|interface|enum)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, group: 1, type: 'class' },
+    { regex: /\b(?!(?:if|for|foreach|while|switch|catch)\b)([a-zA-Z_$][a-zA-Z0-9_$<>]*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(/g, group: 2, type: 'function', insertSuffix: '()' },
+    { regex: /\b(?!(?:return|import|using|package|class|struct|interface|enum|new|throw)\b)([a-zA-Z_$][a-zA-Z0-9_$<>]*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:[;=,])/g, group: 2, type: 'variable' }
+];
+
+export const PARSER_RULES = {
+    js: [
+        { regex: /\b(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, group: 1, type: 'variable' },
+        { regex: /\bfunction\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, group: 1, type: 'function', insertSuffix: '()' },
+        { regex: /\bclass\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, group: 1, type: 'class' }
+    ],
+    cstyle: CSTYLE_RULES,
+    python: [
+        { regex: /\bclass\s+([a-zA-Z_][a-zA-Z0-9_]*)/g, group: 1, type: 'class' },
+        { regex: /\bdef\s+([a-zA-Z_][a-zA-Z0-9_]*)/g, group: 1, type: 'function', insertSuffix: '()' },
+        { regex: /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?![=])/g, group: 1, type: 'variable', exclude: ['if', 'elif', 'for', 'while', 'return', 'print'] }
+    ],
+    lua: [
+        { regex: /\bfunction\s+([a-zA-Z_][a-zA-Z0-9_]*)/g, group: 1, type: 'function', insertSuffix: '()' },
+        { regex: /\b(?:local\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?![=])/g, group: 1, type: 'variable', exclude: ['if', 'for', 'while', 'return', 'print', 'local', 'function', 'end'] }
+    ]
 };

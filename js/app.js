@@ -9,7 +9,7 @@ import { renderSyntaxHighlighting } from './syntax.js';
 import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBeforeCursor } from './prosense.js';
 import { initMinimapScroll } from './minimap.js';
 import { getCustomSnippets, saveCustomSnippets, renderSnippetsList } from './snippets.js';
-import { initTerminal, toggleTerminal, updateTerminalPrompt, printToTerminal } from './terminal.js';
+import { initTerminal, toggleTerminal, updateTerminalPrompt, printToTerminal, appendOutputChunk, setRunState } from './terminal.js';
 
 // Application State Models
 let rootDirectoryHandle = null;
@@ -24,6 +24,16 @@ const tabContentsCache = new Map();
 
 let activeSyntaxError = null;
 let syntaxCheckTimeout = null;
+
+// Electron IPC bridge (assigned in the Electron guard below). Module-scoped so
+// helper functions like updateGoLiveVisibility / triggerSyntaxCheck can use it.
+let ipcRenderer = null;
+
+// Extensions the Run button supports — populated from the main-process run registry.
+let runnableExts = new Set();
+
+// Identify a file by its absolute path (falls back to name in the web build).
+const fileKey = (h) => (h && (h.path || h.name)) || '';
 
 // Core Canvas Interface Elements Cache Maps
 const btnOpenFolder = document.getElementById('btn-open-folder');
@@ -95,7 +105,7 @@ function updateGoLiveVisibility(fileName) {
         btnGoLive.classList.remove('hidden-btn');
     } else {
         // Stop server automatically if the active tab changes to a non-web language
-        if (serverActiveUrl) {
+        if (serverActiveUrl && ipcRenderer) {
             ipcRenderer.invoke('stop-server').then(() => {
                 serverActiveUrl = null;
                 btnGoLive.innerHTML = '<i class="fa-solid fa-tower-broadcast"></i> Go Live';
@@ -108,14 +118,16 @@ function updateGoLiveVisibility(fileName) {
 const btnRunCode = document.getElementById('btn-run-code');
 
 /**
- * Monitors active tab file extensions to show/hide the "Run" C#/Python compiler button.
+ * Monitors active tab file extensions to show/hide the "Run" button.
+ * Which extensions are runnable comes from the main-process run registry
+ * (run-config.js) via the 'get-run-langs' IPC, so adding a language needs
+ * no change here.
  */
 function updateRunButtonVisibility(fileName) {
     if (!btnRunCode) return;
     const ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
-    
-    // Display Run button for both C# (.cs) and Python (.py) files
-    if ((ext === 'cs' || ext === 'py') && rootDirectoryHandle) {
+
+    if (runnableExts.has(ext) && rootDirectoryHandle) {
         btnRunCode.classList.remove('hidden-btn');
     } else {
         btnRunCode.classList.add('hidden-btn');
@@ -125,7 +137,23 @@ function updateRunButtonVisibility(fileName) {
 // Bind custom title bar buttons to native window actions under Electron
 const isElectronApp = typeof window !== 'undefined' && window.process && window.process.type;
 if (isElectronApp) {
-    const ipcRenderer = window.require('electron').ipcRenderer;
+    ipcRenderer = window.require('electron').ipcRenderer;
+
+    // Populate the set of runnable extensions from the main-process registry.
+    ipcRenderer.invoke('get-run-langs').then((langs) => {
+        runnableExts = new Set(Object.keys(langs || {}));
+        if (activeFileHandle) updateRunButtonVisibility(activeFileHandle.name);
+    }).catch(() => {});
+
+    // Stream live program output from integrated runs into the terminal.
+    ipcRenderer.on('run-output', (e, { stream, data }) => {
+        appendOutputChunk(data, stream);
+    });
+    ipcRenderer.on('run-exit', (e, { code }) => {
+        appendOutputChunk(`\n[Process exited with code ${code}]\n`, 'system');
+        setRunState(false);
+    });
+
     const winMin = document.getElementById('win-min');
     const winMax = document.getElementById('win-max');
     const winClose = document.getElementById('win-close');
@@ -177,18 +205,30 @@ if (isElectronApp) {
 
     if (btnRunCode) {
         btnRunCode.addEventListener('click', async () => {
-            if (activeFileHandle) {
-                const ext = activeFileHandle.name.split('.').pop().toLowerCase();
-                
-                if (ext === 'cs') {
-                    printToTerminal(`Compiling and executing C# file: ${activeFileHandle.name}...`);
-                    const result = await ipcRenderer.invoke('compile-run-csharp', activeFileHandle.path);
-                    printToTerminal(result.output);
-                } else if (ext === 'py') {
-                    printToTerminal(`Executing Python file: ${activeFileHandle.name}...`);
-                    const result = await ipcRenderer.invoke('run-python', activeFileHandle.path);
-                    printToTerminal(result.output);
-                }
+            if (!activeFileHandle) return;
+            const ext = activeFileHandle.name.split('.').pop().toLowerCase();
+            if (!runnableExts.has(ext)) return;
+
+            // Save first so we run the latest source on disk.
+            if (dirtyFiles.has(fileKey(activeFileHandle))) {
+                await handleSaveFile();
+            }
+
+            const mode = localStorage.getItem('run-mode-preset') || 'integrated';
+
+            if (mode === 'integrated') {
+                // Route terminal input to the running program's stdin.
+                setRunState(true, (line) => ipcRenderer.invoke('run-input', line));
+            } else {
+                printToTerminal(`Launching ${activeFileHandle.name} in an external window...`);
+            }
+
+            const result = await ipcRenderer.invoke('run-file', activeFileHandle.path, mode);
+
+            // For integrated runs, a truthy `running` means output/exit arrive via events.
+            if (!result || !result.running) {
+                if (mode === 'integrated') setRunState(false);
+                if (result && result.output) printToTerminal(result.output);
             }
         });
     }
@@ -257,12 +297,12 @@ closeSettingsBtn.addEventListener('click', toggleSettingsPanel);
 
 // Dynamic rendering sync loops
 editor.addEventListener('input', () => {
-    if (activeFileHandle && !dirtyFiles.has(activeFileHandle.name)) {
-        dirtyFiles.add(activeFileHandle.name);
+    if (activeFileHandle && !dirtyFiles.has(fileKey(activeFileHandle))) {
+        dirtyFiles.add(fileKey(activeFileHandle));
         updateTabsUI();
     }
     if (activeFileHandle) {
-        tabContentsCache.set(activeFileHandle.name, editor.value);
+        tabContentsCache.set(fileKey(activeFileHandle), editor.value);
     }
     runLayoutRenderEngine();
     triggerSyntaxCheck(); // Evaluate compilation errors in the background
@@ -477,7 +517,13 @@ function runLayoutRenderEngine() {
     
     editorBackdrop.innerHTML = backdropHTML + (text.endsWith('\n') ? '\n ' : ' ');
 
-    handleProSenseInput(activeName);
+    // Harvest symbols from other open buffers so ProSense can suggest across files.
+    const activeKey = fileKey(activeFileHandle);
+    const extraBuffers = [];
+    for (const [key, buf] of tabContentsCache) {
+        if (key !== activeKey && buf) extraBuffers.push(buf);
+    }
+    handleProSenseInput(activeName, extraBuffers);
 }
 
 // FIXED: Cleaned up structural definition properties references
@@ -576,18 +622,18 @@ async function handleOpenFolder() {
 async function handleOpenFile(fileHandle) {
     const actualHandle = fileHandle.handle ? fileHandle.handle : fileHandle;
     try {
-        if (!openTabs.find(t => t.name === actualHandle.name)) {
+        if (!openTabs.find(t => fileKey(t) === fileKey(actualHandle))) {
             openTabs.push(actualHandle);
         }
         activeFileHandle = actualHandle;
         selectedHandle = actualHandle;
-        
+
         let contents;
-        if (tabContentsCache.has(actualHandle.name)) {
-            contents = tabContentsCache.get(actualHandle.name);
+        if (tabContentsCache.has(fileKey(actualHandle))) {
+            contents = tabContentsCache.get(fileKey(actualHandle));
         } else {
             contents = await readFileContents(activeFileHandle);
-            tabContentsCache.set(actualHandle.name, contents);
+            tabContentsCache.set(fileKey(actualHandle), contents);
         }
 
         editor.value = contents;
@@ -610,8 +656,8 @@ async function handleSaveFile() {
     if (!activeFileHandle) return;
     try {
         await saveFileContents(activeFileHandle, editor.value);
-        tabContentsCache.set(activeFileHandle.name, editor.value); // Sync buffer changes
-        dirtyFiles.delete(activeFileHandle.name);
+        tabContentsCache.set(fileKey(activeFileHandle), editor.value); // Sync buffer changes
+        dirtyFiles.delete(fileKey(activeFileHandle));
         updateTabsUI();
     } catch (err) {
         alert('Disk write execution target exception errors encountered.');
@@ -652,9 +698,20 @@ async function handleMoveItem(sourceItem, targetDirectoryHandle) {
             const newFileHandle = await targetDirectoryHandle.getFileHandle(sourceItem.name, { create: true });
             await saveFileContents(newFileHandle, fileData);
             
-            const tabIdx = openTabs.findIndex(t => t.name === sourceItem.name);
+            const sourceKey = fileKey(sourceItem.handle);
+            const tabIdx = openTabs.findIndex(t => fileKey(t) === sourceKey);
             if (tabIdx !== -1) openTabs[tabIdx] = newFileHandle;
-            if (activeFileHandle && activeFileHandle.name === sourceItem.name) {
+
+            // Migrate any cached buffer / dirty state to the new location key.
+            if (tabContentsCache.has(sourceKey)) {
+                tabContentsCache.set(fileKey(newFileHandle), tabContentsCache.get(sourceKey));
+                tabContentsCache.delete(sourceKey);
+            }
+            if (dirtyFiles.has(sourceKey)) {
+                dirtyFiles.delete(sourceKey);
+                dirtyFiles.add(fileKey(newFileHandle));
+            }
+            if (activeFileHandle && fileKey(activeFileHandle) === sourceKey) {
                 activeFileHandle = newFileHandle;
                 selectedHandle = newFileHandle;
             }
@@ -670,15 +727,16 @@ async function handleMoveItem(sourceItem, targetDirectoryHandle) {
 }
 
 function handleCloseTab(fileHandle) {
-    if (dirtyFiles.has(fileHandle.name)) {
+    const key = fileKey(fileHandle);
+    if (dirtyFiles.has(key)) {
         const confirmClose = confirm(`"${fileHandle.name}" contains unsaved changes. Close anyway?`);
         if (!confirmClose) return;
     }
-    openTabs = openTabs.filter(t => t.name !== fileHandle.name);
-    dirtyFiles.delete(fileHandle.name);
-    tabContentsCache.delete(fileHandle.name);
-    
-    if (activeFileHandle && activeFileHandle.name === fileHandle.name) {
+    openTabs = openTabs.filter(t => fileKey(t) !== key);
+    dirtyFiles.delete(key);
+    tabContentsCache.delete(key);
+
+    if (activeFileHandle && fileKey(activeFileHandle) === key) {
         if (openTabs.length > 0) {
             handleOpenFile(openTabs[openTabs.length - 1]);
         } else {
@@ -716,9 +774,9 @@ async function handleProjectItemDelete(item) {
 /**
  * Splice-swaps dragged tab positions in array when dropped over another tab.
  */
-function handleTabReorder(sourceName, targetName) {
-    const sourceIdx = openTabs.findIndex(t => t.name === sourceName);
-    const targetIdx = openTabs.findIndex(t => t.name === targetName);
+function handleTabReorder(sourceKey, targetKey) {
+    const sourceIdx = openTabs.findIndex(t => fileKey(t) === sourceKey);
+    const targetIdx = openTabs.findIndex(t => fileKey(t) === targetKey);
     if (sourceIdx !== -1 && targetIdx !== -1) {
         const [draggedTab] = openTabs.splice(sourceIdx, 1);
         openTabs.splice(targetIdx, 0, draggedTab);
@@ -787,11 +845,11 @@ function showPrompt(title, placeholder = '') {
  * Triggers an optimized background compilation check for active Python files.
  */
 function triggerSyntaxCheck() {
-    if (!activeFileHandle || !activeFileHandle.name.endsWith('.py')) {
+    if (!ipcRenderer || !activeFileHandle || !activeFileHandle.name.endsWith('.py')) {
         activeSyntaxError = null;
         return;
     }
-    
+
     if (syntaxCheckTimeout) clearTimeout(syntaxCheckTimeout);
     
     syntaxCheckTimeout = setTimeout(async () => {
@@ -815,5 +873,14 @@ if (errorStyleSelector) {
     errorStyleSelector.addEventListener('change', (e) => {
         localStorage.setItem('error-style-preset', e.target.value);
         runLayoutRenderEngine();
+    });
+}
+
+// Run output mode: 'integrated' (in-app terminal) or 'external' (cmd.exe window).
+const runModeSelector = document.getElementById('run-mode-selector');
+if (runModeSelector) {
+    runModeSelector.value = localStorage.getItem('run-mode-preset') || 'integrated';
+    runModeSelector.addEventListener('change', (e) => {
+        localStorage.setItem('run-mode-preset', e.target.value);
     });
 }

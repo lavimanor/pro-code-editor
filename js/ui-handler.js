@@ -111,12 +111,18 @@ export function renderFileTree(container, items, selectedPath, expandedFolders, 
 export function renderTabs(container, openTabs, activeFileHandle, dirtyFiles, activeIconPackKey, onTabSelect, onTabClose, onTabReorder) {
     container.innerHTML = '';
     const iconPack = ICON_PACKS[activeIconPackKey] || ICON_PACKS['material'];
-    
+
+    // Identify tabs by absolute path (falls back to name in the web build) so two
+    // files sharing a name in different folders don't collide.
+    const keyOf = (h) => (h && (h.path || h.name)) || '';
+    const activeKey = keyOf(activeFileHandle);
+
     openTabs.forEach(fileHandle => {
         const tab = document.createElement('div');
-        const isDirty = dirtyFiles.has(fileHandle.name);
-        
-        tab.className = `tab ${activeFileHandle && activeFileHandle.name === fileHandle.name ? 'active' : ''} ${isDirty ? 'dirty' : ''}`;
+        const handleKey = keyOf(fileHandle);
+        const isDirty = dirtyFiles.has(handleKey);
+
+        tab.className = `tab ${handleKey === activeKey ? 'active' : ''} ${isDirty ? 'dirty' : ''}`;
         
         // Render File Type Icon
         const iconSpan = document.createElement('span');
@@ -146,8 +152,8 @@ export function renderTabs(container, openTabs, activeFileHandle, dirtyFiles, ac
         
         tab.addEventListener('dragstart', (e) => {
             e.stopPropagation();
-            e.dataTransfer.setData('text/plain', fileHandle.name);
-            window.draggedTabName = fileHandle.name;
+            e.dataTransfer.setData('text/plain', handleKey);
+            window.draggedTabKey = handleKey;
         });
 
         tab.addEventListener('dragover', (e) => {
@@ -166,10 +172,10 @@ export function renderTabs(container, openTabs, activeFileHandle, dirtyFiles, ac
             e.stopPropagation();
             tab.classList.remove('tab-drag-over');
             
-            const sourceName = window.draggedTabName || e.dataTransfer.getData('text/plain');
-            const targetName = fileHandle.name;
-            if (sourceName && sourceName !== targetName) {
-                onTabReorder(sourceName, targetName);
+            const sourceKey = window.draggedTabKey || e.dataTransfer.getData('text/plain');
+            const targetKey = handleKey;
+            if (sourceKey && sourceKey !== targetKey) {
+                onTabReorder(sourceKey, targetKey);
             }
         });
 
