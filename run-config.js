@@ -1,8 +1,6 @@
 /**
  * =====================================================================
- *  Language Run Registry
- * ---------------------------------------------------------------------
- *  The SINGLE place to register a runnable language.
+ *  Language Run Registry (Compilations Removed)
  * =====================================================================
  */
 
@@ -31,12 +29,9 @@ const RUN_CONFIG = {
 
     java: {
         label: 'Java',
-        compile: [
-            [ { cmd: 'javac', args: ['{file}'] } ]
-        ],
         run: [
-            // Run the compiled class by name using the source folder as classpath.
-            { cmd: 'java', args: ['-cp', '{dir}', '{base}'] }
+            // Runs standard Java source files directly on newer JDK versions
+            { cmd: 'java', args: ['{file}'] }
         ]
     }
 };

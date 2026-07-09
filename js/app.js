@@ -10,7 +10,6 @@ import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBefore
 import { initMinimapScroll } from './minimap.js';
 import { getCustomSnippets, saveCustomSnippets, renderSnippetsList } from './snippets.js';
 import { initTerminal, toggleTerminal, updateTerminalPrompt, printToTerminal, appendOutputChunk, setRunState } from './terminal.js';
-import { validateCode } from './validator.js';
 
 // Application State Models
 let rootDirectoryHandle = null;
@@ -22,9 +21,6 @@ const dirtyFiles = new Set();
 const expandedFolders = new Set();
 let activeIconPack = localStorage.getItem('editor-icon-pack-preset') || 'material';
 const tabContentsCache = new Map();
-
-let activeSyntaxError = null;
-let syntaxCheckTimeout = null;
 
 // Electron IPC bridge
 let ipcRenderer = null;
@@ -303,7 +299,6 @@ editor.addEventListener('input', () => {
         tabContentsCache.set(fileKey(activeFileHandle), editor.value);
     }
     runLayoutRenderEngine();
-    triggerSyntaxCheck();
 
     // Trigger autocomplete suggestions strictly during input events
     const activeName = activeFileHandle ? activeFileHandle.name : '';
@@ -461,7 +456,7 @@ function toggleSettingsPanel() {
 }
 
 /**
- * Updates line numbers, minimap elements, and caret tracking elements.
+ * Updates line numbers and coordinates the editor backdrop overlay.
  */
 function runLayoutRenderEngine() {
     const text = editor.value;
@@ -499,11 +494,8 @@ function runLayoutRenderEngine() {
     const activeName = activeFileHandle ? activeFileHandle.name : '';
     const currentWord = getWordBeforeCursor();
     const markerIndex = cursor - currentWord.length;
-    
-    const stylePreset = localStorage.getItem('error-style-preset') || 'underline';
-    const errorClass = stylePreset === 'highlight' ? 'syntax-error-highlight' : 'syntax-error-underline';
 
-    const backdropHTML = renderSyntaxHighlighting(text, activeName, highlightIndices, markerIndex, activeSyntaxError, errorClass);
+    const backdropHTML = renderSyntaxHighlighting(text, activeName, highlightIndices, markerIndex);
     editorBackdrop.innerHTML = backdropHTML + (text.endsWith('\n') ? '\n ' : ' ');
 }
 
@@ -626,7 +618,6 @@ async function handleOpenFile(fileHandle) {
         updateRunButtonVisibility(activeFileHandle.name);
         updateTabsUI();
         runLayoutRenderEngine();
-        triggerSyntaxCheck();
         await refreshExplorer();
     } catch (err) {
         alert('Could not open target resource path stream.');
@@ -726,7 +717,6 @@ function handleCloseTab(fileHandle) {
             filePathDisplay.textContent = rootDirectoryHandle ? `Workspace: ${rootDirectoryHandle.name}` : 'Workspace Closed';
             updateGoLiveVisibility('');
             updateRunButtonVisibility('');
-            triggerSyntaxCheck();
             runLayoutRenderEngine();
         }
     } else if (openTabs.length === 0) {
@@ -809,60 +799,5 @@ function showPrompt(title, placeholder = '') {
         okBtn.addEventListener('click', handleOk);
         cancelBtn.addEventListener('click', handleCancel);
         modalInput.addEventListener('keydown', handleKeydown);
-    });
-}
-
-/**
- * Optimized syntax validation checks. Supports Python, HTML, CSS, and JS.
- */
-function triggerSyntaxCheck() {
-    if (!activeFileHandle) {
-        activeSyntaxError = null;
-        return;
-    }
-
-    const ext = activeFileHandle.name.split('.').pop().toLowerCase();
-    if (syntaxCheckTimeout) clearTimeout(syntaxCheckTimeout);
-    
-    syntaxCheckTimeout = setTimeout(async () => {
-        try {
-            if (ext === 'py' && ipcRenderer) {
-                const result = await ipcRenderer.invoke('check-python-syntax', editor.value);
-                if (result.success) {
-                    activeSyntaxError = null;
-                } else {
-                    activeSyntaxError = result; // { line, offset, msg, text }
-                }
-            } else if (['js', 'mjs', 'cjs', 'html', 'htm', 'css'].includes(ext)) {
-                const errors = validateCode(editor.value, ext);
-                if (errors && errors.length > 0) {
-                    activeSyntaxError = errors[0]; // Highlights the first encountered error
-                } else {
-                    activeSyntaxError = null;
-                }
-            } else {
-                activeSyntaxError = null;
-            }
-            runLayoutRenderEngine();
-        } catch (err) {
-            console.error('Syntax validation failed:', err);
-        }
-    }, 250);
-}
-
-const errorStyleSelector = document.getElementById('error-style-selector');
-if (errorStyleSelector) {
-    errorStyleSelector.value = localStorage.getItem('error-style-preset') || 'underline';
-    errorStyleSelector.addEventListener('change', (e) => {
-        localStorage.setItem('error-style-preset', e.target.value);
-        runLayoutRenderEngine();
-    });
-}
-
-const runModeSelector = document.getElementById('run-mode-selector');
-if (runModeSelector) {
-    runModeSelector.value = localStorage.getItem('run-mode-preset') || 'integrated';
-    runModeSelector.addEventListener('change', (e) => {
-        localStorage.setItem('run-mode-preset', e.target.value);
     });
 }

@@ -38,7 +38,6 @@ function createWindow() {
     win.loadFile('index.html');
 }
 
-// Window control event routing
 ipcMain.on('window-minimize', () => {
     const win = BrowserWindow.getFocusedWindow();
     if (win) win.minimize();
@@ -60,7 +59,6 @@ ipcMain.on('window-close', () => {
     if (win) win.close();
 });
 
-// Directory picker handling...
 ipcMain.handle('open-directory', async () => {
     const result = await dialog.showOpenDialog({
         properties: ['openDirectory']
@@ -102,7 +100,6 @@ ipcMain.handle('start-server', (event, folderPath, activeFileName) => {
                 console.error('Failed to decode URI:', e);
             }
 
-            // Secure target paths against directory traversal exploits
             const filePath = path.resolve(folderPath, decodedUrl.replace(/^\//, ''));
             if (!filePath.startsWith(path.resolve(folderPath))) {
                 res.writeHead(403, { 'Content-Type': 'text/plain' });
@@ -126,7 +123,7 @@ ipcMain.handle('start-server', (event, folderPath, activeFileName) => {
         });
 
         webServer.on('error', (err) => {
-            console.error('Local server error:', err);
+            console.error('Server error:', err);
             resolve(null);
         });
 
@@ -155,7 +152,7 @@ ipcMain.handle('stop-server', () => {
 });
 
 // =====================================================================
-//  Code Execution Engine (config-driven, see run-config.js)
+//  Code Execution Engine (Direct Execution Only)
 // =====================================================================
 
 let activeChild = null;
@@ -236,23 +233,6 @@ async function runIntegrated(event, config, ctx) {
         }
     };
 
-    if (config.compile) {
-        for (const stepCandidates of config.compile) {
-            send('system', `[Compiling ${config.label}...]\n`);
-            let child;
-            try {
-                child = await launchStep(stepCandidates, ctx, send);
-            } catch (e) {
-                return { success: false, output: `[Compiler not found] Could not launch the ${config.label} compiler. Verify the toolchain is installed and on your PATH.` };
-            }
-            const code = await new Promise(res => child.once('close', res));
-            if (code !== 0) {
-                send('system', `\n[Compilation failed — exit code ${code}]\n`);
-                return { success: false, output: `[Compilation Error] ${config.label} compilation failed (exit code ${code}).` };
-            }
-        }
-    }
-
     send('system', `[Running ${config.label}...]\n`);
     let runChild;
     try {
@@ -277,30 +257,6 @@ function quoteWin(s) {
 }
 
 async function runExternal(config, ctx) {
-    if (config.compile) {
-        for (const stepCandidates of config.compile) {
-            const result = await new Promise((resolve) => {
-                let idx = 0;
-                const attempt = () => {
-                    if (idx >= stepCandidates.length) {
-                        resolve({ ok: false, err: 'compiler not found' });
-                        return;
-                    }
-                    const { cmd, args } = resolveCandidate(stepCandidates[idx++], ctx);
-                    execFile(cmd, args, { cwd: ctx.dir }, (err, stdout, stderr) => {
-                        if (err && err.code === 'ENOENT') { attempt(); return; }
-                        if (err) { resolve({ ok: false, err: `${stdout}\n${stderr}` }); return; }
-                        resolve({ ok: true });
-                    });
-                };
-                attempt();
-            });
-            if (!result.ok) {
-                return { success: false, output: `[Compilation Error]\n${result.err}` };
-            }
-        }
-    }
-
     const runCand = resolveCandidate(config.run[0], ctx);
     const inner = [quoteWin(runCand.cmd), ...runCand.args.map(quoteWin)].join(' ');
 
@@ -361,76 +317,4 @@ ipcMain.handle('get-run-langs', () => {
         langs[ext] = cfg.label;
     }
     return langs;
-});
-
-ipcMain.handle('check-python-syntax', (event, code) => {
-    return new Promise((resolve) => {
-        const pythonCmd = 'python';
-        const pyScript = `
-import ast, sys, json
-try:
-    ast.parse(sys.stdin.read())
-    print(json.dumps({"success": True}))
-except SyntaxError as e:
-    print(json.dumps({
-        "success": False,
-        "line": e.lineno,
-        "offset": e.offset,
-        "msg": e.msg
-    }))
-except Exception as e:
-    print(json.dumps({"success": True}))
-`;
-
-        const { spawn } = require('child_process');
-        const child = spawn(pythonCmd, ['-c', pyScript]);
-        let outputData = '';
-
-        child.on('error', (err) => {
-            tryFallback();
-        });
-
-        function tryFallback() {
-            const fallbackChild = spawn('py', ['-c', pyScript]);
-            let fbOutput = '';
-
-            fallbackChild.on('error', (fbErr) => {
-                resolve({ success: true });
-            });
-
-            fallbackChild.stdin.write(code);
-            fallbackChild.stdin.end();
-
-            fallbackChild.stdout.on('data', (data) => {
-                fbOutput += data.toString();
-            });
-
-            fallbackChild.on('close', () => {
-                try {
-                    const parsedFb = JSON.parse(fbOutput.trim());
-                    resolve(parsedFb);
-                } catch (fbErr) {
-                    resolve({ success: true });
-                }
-            });
-        }
-
-        if (child.pid) {
-            child.stdin.write(code);
-            child.stdin.end();
-
-            child.stdout.on('data', (data) => {
-                outputData += data.toString();
-            });
-
-            child.on('close', (exitCode) => {
-                try {
-                    const parsed = JSON.parse(outputData.trim());
-                    resolve(parsed);
-                } catch (err) {
-                    tryFallback();
-                }
-            });
-        }
-    });
 });

@@ -13,49 +13,6 @@
     --text-main: #cccccc;
     --text-muted: #858585;
     --border-color: #3c3c3c;
-
-    /* Syntax Highlighting Defaults Fallback */
-    --syntax-comment: #6a9955;
-    --syntax-doctype: #569cd6;
-    --syntax-tag-name: #569cd6;
-    --syntax-attr-name: #9cdcfe;
-    --syntax-attr-value: #ce9178;
-    --syntax-tag-bracket: #808080;
-
-    /* CSS Syntax Coloring Fallback */
-    --syntax-css-selector: #d7ba7d;
-    --syntax-css-property: #9cdcfe;
-    --syntax-css-value: #ce9178;
-    --syntax-css-punctuation: #d4d4d4;
-    --syntax-css-at-rule: #c586c0;
-
-    /* JS Syntax Coloring Fallback */
-    --syntax-js-keyword: #569cd6;
-    --syntax-js-string: #ce9178;
-    --syntax-js-function: #dcdcaa;
-    --syntax-js-builtin: #4ec9b0;
-    --syntax-js-number: #b5cea8;
-    --syntax-js-punctuation: #d4d4d4;
-
-    /* JSON Syntax Coloring Fallback */
-    --syntax-json-key: #9cdcfe;
-    --syntax-json-string: #ce9178;
-    --syntax-json-literal: #569cd6;
-    --syntax-json-number: #b5cea8;
-    --syntax-json-punctuation: #d4d4d4;
-
-    /* Markdown Syntax Coloring Fallback */
-    --syntax-md-header: #569cd6;
-    --syntax-md-list: #9cdcfe;
-    --syntax-md-blockquote: #6a9955;
-    --syntax-md-codeblock-fence: #808080;
-    --syntax-md-codeblock-content: #d4d4d4;
-    --syntax-md-bold: #ce9178;
-    --syntax-md-italic: #ce9178;
-    --syntax-md-inline-code: #ce9178;
-    --syntax-md-link: #4fc1ff;
-
-    /* Scrollbar Default Fallback Colors */
     --scrollbar-thumb: #424242;
     --scrollbar-thumb-hover: #4f4f4f;
 }
@@ -64,7 +21,6 @@
     box-sizing: border-box;
     margin: 0;
     padding: 0;
-    /* Standards-based scrollbar for Firefox */
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) var(--bg-darker);
 }
@@ -77,7 +33,6 @@ body {
     height: 100vh;
 }
 
-/* Custom Scrollbar Styles for WebKit Browsers (Chrome, Edge, Safari) */
 ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -109,7 +64,7 @@ body {
     align-items: center;
     justify-content: space-between;
     z-index: 10;
-    -webkit-app-region: drag; /* Allows dragging the window by clicking empty title bar space */
+    -webkit-app-region: drag;
     user-select: none;
 }
 
@@ -133,10 +88,9 @@ body {
     display: flex;
     align-items: center;
     gap: 8px;
-    -webkit-app-region: no-drag; /* Exclude actions from drag region so they remain clickable */
+    -webkit-app-region: no-drag;
 }
 
-/* Override header buttons to match title bar height */
 #top-bar button:not(.win-btn) {
     margin: 4px 0;
 }
@@ -145,7 +99,7 @@ body {
     display: flex;
     align-items: center;
     height: 100%;
-    -webkit-app-region: no-drag; /* Exclude window controls from drag region */
+    -webkit-app-region: no-drag;
 }
 
 .win-btn {
@@ -314,22 +268,19 @@ button:disabled {
 
 .tree-label { display: flex; align-items: center; gap: 8px; pointer-events: none; }
 
-/* File Tree Explorer Icon Colors */
 .tree-label i.fa-js { color: #f1e05a; }
 .tree-label i.fa-html5 { color: #e34c26; }
 .tree-label i.fa-css3-alt { color: #563d7c; }
 .tree-label i.fa-code { color: #4fc1ff; }
 .tree-label i.fa-file-lines { color: var(--text-muted); }
 .tree-label i.fa-folder { color: #e9a933; }
-
-/* New Language and Asset Icon Colors */
 .tree-label i.fa-python { color: #3572a5; }
 .tree-label i.fa-java { color: #b07219; }
-.tree-label i.fa-hashtag { color: #178600; }     /* C# standard green */
-.tree-label i.fa-c { color: #555555; }           /* C/C++ slate */
-.tree-label i.fa-file-image { color: #4caf50; }  /* Image assets green */
-.tree-label i.fa-bezier-curve { color: #ff9800; } /* SVG orange */
-.tree-label i.fa-file-brackets-curly { color: #cd4fff; } /* JSON files cyan */
+.tree-label i.fa-hashtag { color: #178600; }
+.tree-label i.fa-c { color: #555555; }
+.tree-label i.fa-file-image { color: #4caf50; }
+.tree-label i.fa-bezier-curve { color: #ff9800; }
+.tree-label i.fa-file-brackets-curly { color: #cd4fff; }
 .tree-label i.fa-moon, .tab-icon i.fa-moon { color: #0059b3; }
 
 .delete-btn { background: none; border: none; color: #ef5350; padding: 2px 6px; font-size: 13px; display: none; }
@@ -351,11 +302,10 @@ button:disabled {
     border-bottom: 1px solid var(--border-color);
 }
 
-/* Tab Icon Spacing */
 .tab {
     display: flex;
     align-items: center;
-    gap: 8px; /* Balanced spacing around tab content */
+    gap: 8px;
     padding: 0 16px;
     background-color: var(--bg-tab-inactive);
     color: var(--text-muted);
@@ -372,26 +322,22 @@ button:disabled {
     font-size: 13px;
 }
 
-/* Tab Icon Colors */
 .tab-icon i.fa-js { color: #f1e05a; }
 .tab-icon i.fa-html5 { color: #e34c26; }
 .tab-icon i.fa-css3-alt { color: #563d7c; }
 .tab-icon i.fa-code { color: #4fc1ff; }
 .tab-icon i.fa-file-lines { color: var(--text-muted); }
-
-/* New Language and Asset Icon Colors */
 .tab-icon i.fa-python { color: #3572a5; }
 .tab-icon i.fa-java { color: #b07219; }
-.tab-icon i.fa-hashtag { color: #178600; }     /* C# standard green */
-.tab-icon i.fa-c { color: #555555; }           /* C/C++ slate */
-.tab-icon i.fa-file-image { color: #4caf50; }  /* Image assets green */
-.tab-icon i.fa-bezier-curve { color: #ff9800; } /* SVG orange */
+.tab-icon i.fa-hashtag { color: #178600; }
+.tab-icon i.fa-c { color: #555555; }
+.tab-icon i.fa-file-image { color: #4caf50; }
+.tab-icon i.fa-bezier-curve { color: #ff9800; }
 
 .tab-label {
     display: inline-block;
 }
 
-/* Drag Over Tab Drop Visual Indicator */
 .tab.tab-drag-over {
     border-left: 2px solid var(--accent-color) !important;
     background-color: var(--bg-dark) !important;
@@ -408,7 +354,6 @@ button:disabled {
 .tab:hover .tab-close::before { content: '×' !important; font-size: 14px; }
 .tab.dirty .tab-close::before { content: '●'; color: #e9a933; font-size: 10px; }
 
-/* RECONSTRUCTED: Multi-layered Code Layout Window Panels System Grid */
 #editor-viewport-wrapper {
     flex: 1;
     display: flex;
@@ -417,7 +362,6 @@ button:disabled {
     background-color: var(--bg-dark);
 }
 
-/* Sync-Locked Gutter Layout */
 #line-gutter {
     width: 48px;
     background-color: var(--bg-darker);
@@ -438,14 +382,12 @@ button:disabled {
     height: 22px;
 }
 
-/* Layer Stack Wrapper */
 #editor-surface-box {
     flex: 1;
     position: relative;
     overflow: hidden;
 }
 
-/* Shared layout properties to guarantee pixel-for-pixel alignment */
 #editor, #editor-backdrop {
     position: absolute;
     top: 0;
@@ -461,8 +403,6 @@ button:disabled {
     word-wrap: normal;
     background: transparent;
     scrollbar-gutter: stable;
-
-    /* Force identical tab dimensions and rendering features */
     tab-size: 4;
     -moz-tab-size: 4;
     letter-spacing: normal;
@@ -472,9 +412,8 @@ button:disabled {
     -webkit-font-smoothing: antialiased;
 }
 
-
 #editor {
-    color: transparent !important; /* Forces textarea text transparent so backdrop colors show */
+    color: transparent !important;
     resize: none;
     outline: none;
     z-index: 2;
@@ -483,13 +422,12 @@ button:disabled {
 }
 
 #editor-backdrop {
-    color: var(--text-main) !important; /* Backs up standard text color for highlights */
+    color: var(--text-main) !important;
     z-index: 1;
     pointer-events: none;
     overflow: hidden;
 }
 
-/* Polished ProSense Suggestion Widget */
 #prosense-widget {
     position: absolute;
     z-index: 1000;
@@ -545,7 +483,6 @@ button:disabled {
     font-weight: 500;
 }
 
-/* Zero-width alignment tracking marker */
 #prosense-caret-marker {
     display: inline-block;
     width: 0;
@@ -554,7 +491,6 @@ button:disabled {
     vertical-align: top;
 }
 
-/* NEW FEATURE: Bracket Highlight Style Token */
 .bracket-highlight {
     background-color: rgba(255, 200, 0, 0.25);
     border: 1px solid #ffcc00;
@@ -564,34 +500,6 @@ button:disabled {
     color: var(--text-main) !important;
 }
 
-/* Standard Unified Syntax Colors */
-.syntax-comment { color: var(--syntax-comment); }
-.syntax-keyword { color: var(--syntax-keyword); }
-.syntax-string { color: var(--syntax-string); }
-.syntax-function { color: var(--syntax-function); }
-.syntax-builtin { color: var(--syntax-builtin); }
-.syntax-number { color: var(--syntax-number); }
-.syntax-punctuation { color: var(--syntax-punctuation); }
-
-/* Markup Specific Colors */
-.syntax-doctype { color: var(--syntax-doctype); }
-.syntax-tag-name { color: var(--syntax-tag-name); }
-.syntax-attr-name { color: var(--syntax-attr-name); }
-.syntax-attr-value { color: var(--syntax-attr-value); }
-.syntax-tag-bracket { color: var(--syntax-tag-bracket); }
-
-/* Markdown Specific Colors */
-.syntax-md-header { color: var(--syntax-md-header); }
-.syntax-md-list { color: var(--syntax-md-list); }
-.syntax-md-blockquote { color: var(--syntax-md-blockquote); opacity: 0.85; }
-.syntax-md-codeblock-fence { color: var(--syntax-md-codeblock-fence); }
-.syntax-md-codeblock-content { color: var(--syntax-md-codeblock-content); }
-.syntax-md-bold { color: var(--syntax-md-bold); }
-.syntax-md-italic { color: var(--syntax-md-italic); }
-.syntax-md-inline-code { color: var(--syntax-md-inline-code); background: rgba(125, 125, 125, 0.15); }
-.syntax-md-link { color: var(--syntax-md-link); text-decoration: underline; }
-
-/* NEW FEATURE: Visual Navigation Sync Minimap Gutter Panels layout */
 #minimap-gutter {
     width: 70px;
     background-color: var(--bg-darker);
@@ -609,7 +517,7 @@ button:disabled {
     width: 100%;
     padding: 4px;
     font-family: var(--font-code);
-    font-size: 2px; /* Scale font down to micro dimensions */
+    font-size: 2px;
     line-height: 3px;
     color: var(--text-muted);
     white-space: pre;
@@ -656,12 +564,10 @@ button:disabled {
 .shortcut-tip { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
 kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; font-size: 10px; color: var(--text-main); }
 
-/* Settings Flex Alignments */
 .flex-row { display: flex; align-items: center; gap: 12px; }
 .flex-grow { flex-grow: 1; }
 #prosense-toggle { width: 16px; height: 16px; cursor: pointer; }
 
-/* Zero-width alignment tracking marker */
 #prosense-caret-marker {
     display: inline-block;
     width: 0;
@@ -670,7 +576,6 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     vertical-align: text-bottom;
 }
 
-/* Custom Status Bar Button layouts */
 .status-bar-btn {
     background: none;
     border: none;
@@ -695,7 +600,6 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     display: none !important;
 }
 
-/* Force standard height and flex bounds on status bar */
 #status-bar {
     background-color: var(--accent-color);
     color: #ffffff;
@@ -714,7 +618,6 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     gap: 16px;
 }
 
-/* Custom Snippets Panel Styling */
 #snippets-manager {
     display: flex;
     flex-direction: column;
@@ -776,7 +679,6 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     cursor: pointer;
 }
 
-/* Minimap Interactive Indicator cursor override */
 #minimap-gutter {
     cursor: pointer;
 }
@@ -787,7 +689,6 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     cursor: grabbing;
 }
 
-/* Bottom Panel / Terminal Layout Styles */
 #bottom-panel {
     height: 200px;
     background-color: var(--bg-darker);
@@ -885,12 +786,10 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     padding: 0;
 }
 
-/* Generic Hidden button override */
 .hidden-btn {
     display: none !important;
 }
 
-/* Custom Prompt Modal Overlay */
 #custom-prompt-modal {
     position: fixed;
     top: 0;
@@ -950,18 +849,4 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     background-color: var(--accent-color);
     border-color: transparent;
     color: #ffffff;
-}
-
-/* Wavy Red Underline Style */
-.syntax-error-underline {
-    border-bottom: 2px wavy #ef5350 !important;
-    margin-bottom: -2px;
-}
-
-/* IntelliJ Soft Highlight Style */
-.syntax-error-highlight {
-    background-color: rgba(239, 83, 80, 0.22) !important;
-    border-bottom: 2px solid #ef5350 !important;
-    border-radius: 2px;
-    margin: -1px;
 }
