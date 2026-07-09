@@ -81,6 +81,7 @@ const prosenseToggle = document.getElementById('prosense-toggle');
  * Sidebar Panel Switching Engine
  */
 let currentActiveView = 'explorer';
+window.currentActiveView = currentActiveView;
 
 function switchSidebarView(viewId, panelConfig = null) {
     const fileTree = document.getElementById('file-tree');
@@ -102,6 +103,7 @@ function switchSidebarView(viewId, panelConfig = null) {
             sidebar.classList.remove('collapsed-bar');
         }
         currentActiveView = 'explorer';
+        window.currentActiveView = 'explorer';
     } else if (panelConfig) {
         const btn = document.getElementById(`act-btn-${viewId}`);
         if (btn) btn.classList.add('active');
@@ -124,6 +126,7 @@ function switchSidebarView(viewId, panelConfig = null) {
             sidebar.classList.remove('collapsed-bar');
         }
         currentActiveView = viewId;
+        window.currentActiveView = viewId;
     }
 }
 
@@ -1165,6 +1168,18 @@ async function bootEditor() {
         centerTitle.appendChild(ideToolbarContainer);
     }
 
+    // Setup and activate Plugins manager sidebar tab panel using our Views API (New Addition)
+    api.views.registerSidebarPanel('plugins-manager', {
+        iconClass: 'fa-solid fa-puzzle-piece',
+        title: 'Plugins',
+        render: (container) => {
+            // Leverage module-isolated render execution
+            import('./plugin-manager.js').then(module => {
+                module.renderPluginsManagerPanel(container);
+            });
+        }
+    });
+
     // Setup dynamic sidebar elements
     const sidebarHeader = sidebar.querySelector('.sidebar-header span');
     if (sidebarHeader && !sidebarHeader.id) {
@@ -1193,6 +1208,137 @@ async function bootEditor() {
 
     // Apply cached icon preference
     iconSelector.value = activeIconPack;
+
+    // Set up interactive window splitting layout controls (New Addition)
+    initLayoutResizing();
+}
+
+/**
+ * Advanced Interactivity Layout Resizer:
+ * Controls dual-axis scaling, uses requestAnimationFrame for layout updates, 
+ * implements input shields, and persists dimensions to localStorage.
+ */
+function initLayoutResizing() {
+    const sidebar = document.getElementById('sidebar');
+    const workspaceContainer = document.getElementById('workspace-container');
+    const bottomPanel = document.getElementById('bottom-panel');
+
+    if (!sidebar || !workspaceContainer || !bottomPanel) return;
+
+    // Load persisted sizes from settings cache
+    const savedSidebarWidth = localStorage.getItem('layout-sidebar-width');
+    if (savedSidebarWidth) {
+        sidebar.style.width = `${savedSidebarWidth}px`;
+    }
+    const savedTerminalHeight = localStorage.getItem('layout-terminal-height');
+    if (savedTerminalHeight) {
+        bottomPanel.style.height = `${savedTerminalHeight}px`;
+    }
+
+    // 1. Configure Sidebar Vertical Resizer
+    const resizerSidebar = document.createElement('div');
+    resizerSidebar.id = 'resizer-sidebar';
+    resizerSidebar.className = 'resizer-v';
+    sidebar.parentNode.insertBefore(resizerSidebar, workspaceContainer);
+
+    resizerSidebar.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startWidth = sidebar.offsetWidth;
+        resizerSidebar.className = 'resizer-v dragging';
+        document.body.className = 'layout-resizing';
+        document.body.style.cursor = 'col-resize';
+
+        let newWidth = startWidth;
+        let updatePending = false;
+
+        const onMouseMove = (moveEvent) => {
+            const deltaX = moveEvent.clientX - startX;
+            // Clamp sidebar width constraints between 160px and 600px
+            newWidth = Math.max(160, Math.min(600, startWidth + deltaX));
+
+            // Prevent rendering overhead by executing inside animation frames
+            if (!updatePending) {
+                updatePending = true;
+                requestAnimationFrame(() => {
+                    sidebar.style.width = `${newWidth}px`;
+                    updatePending = false;
+                });
+            }
+        };
+
+        const onMouseUp = () => {
+            resizerSidebar.className = 'resizer-v';
+            document.body.className = '';
+            document.body.style.cursor = '';
+
+            // Cache setting permanently on completion
+            localStorage.setItem('layout-sidebar-width', newWidth);
+
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    });
+
+    // 2. Configure Bottom Panel Horizontal Resizer
+    const resizerTerminal = document.createElement('div');
+    resizerTerminal.id = 'resizer-terminal';
+    resizerTerminal.className = 'resizer-h';
+    bottomPanel.parentNode.insertBefore(resizerTerminal, bottomPanel);
+
+    resizerTerminal.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const startY = e.clientY;
+        const startHeight = bottomPanel.offsetHeight;
+        resizerTerminal.className = 'resizer-h dragging';
+        document.body.className = 'layout-resizing';
+        document.body.style.cursor = 'row-resize';
+
+        let newHeight = startHeight;
+        let updatePending = false;
+
+        const onMouseMove = (moveEvent) => {
+            const deltaY = moveEvent.clientY - startY;
+            // Pulling UP (smaller coordinate) increases panel height
+            newHeight = Math.max(80, Math.min(550, startHeight - deltaY));
+
+            if (!updatePending) {
+                updatePending = true;
+                requestAnimationFrame(() => {
+                    bottomPanel.style.height = `${newHeight}px`;
+                    updatePending = false;
+                });
+            }
+        };
+
+        const onMouseUp = () => {
+            resizerTerminal.className = 'resizer-h';
+            document.body.className = '';
+            document.body.style.cursor = '';
+
+            // Cache setting permanently on completion
+            localStorage.setItem('layout-terminal-height', newHeight);
+
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    });
+
+    // 3. Configure Safeguard Window Clamps
+    window.addEventListener('resize', () => {
+        // Automatically scale down the sidebar if it exceeds half of the window viewport
+        const maxAllowedWidth = window.innerWidth / 2;
+        if (sidebar.offsetWidth > maxAllowedWidth) {
+            const safeWidth = Math.max(160, Math.floor(maxAllowedWidth));
+            sidebar.style.width = `${safeWidth}px`;
+        }
+    });
 }
 
 // Fire Boot Loader

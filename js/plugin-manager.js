@@ -5,7 +5,8 @@ const CORE_API_VERSION = '1.0.0';
 
 export class PluginManager {
     constructor() {
-        this.plugins = [];
+        this.plugins = [];       // Holds active, verified plugins only
+        this.allPlugins = [];    // Holds all discovered plugins (with status metadata)
         this.isElectron = typeof window !== 'undefined' && window.process && window.process.type;
         this.ipcRenderer = null;
         if (this.isElectron) {
@@ -13,12 +14,8 @@ export class PluginManager {
         }
     }
 
-    /**
-     * Bootstraps the discovery and loading process.
-     */
     async initialize() {
         printToTerminal('[System] Initializing plugin scanner...', 'system');
-        
         try {
             const scanned = await this.scan();
             await this.validateAndRegister(scanned);
@@ -27,9 +24,6 @@ export class PluginManager {
         }
     }
 
-    /**
-     * Invokes scanning on the appropriate runtime channel.
-     */
     async scan() {
         if (this.isElectron && this.ipcRenderer) {
             return await this.ipcRenderer.invoke('scan-plugins');
@@ -39,39 +33,230 @@ export class PluginManager {
         }
     }
 
+    getDisabledPluginIds() {
+        try {
+            return JSON.parse(localStorage.getItem('editor-disabled-plugins') || '[]');
+        } catch (e) {
+            return [];
+        }
+    }
+
+    togglePluginState(id, shouldDisable) {
+        const disabled = this.getDisabledPluginIds();
+        if (shouldDisable) {
+            if (!disabled.includes(id)) {
+                disabled.push(id);
+            }
+        } else {
+            const idx = disabled.indexOf(id);
+            if (idx !== -1) {
+                disabled.splice(idx, 1);
+            }
+        }
+        localStorage.setItem('editor-disabled-plugins', JSON.stringify(disabled));
+    }
+
     /**
-     * Validates, registers, and activates discovered manifests.
+     * Resets and dynamically re-activates all plugins using cache-busting queries.
      */
+    async reloadAllPlugins() {
+        printToTerminal('[System] Initiating hot-reload sequence...', 'system');
+
+        // 1. Teardown active dynamic toolbar elements and greetings
+        const ideToolbarContainer = document.getElementById('ide-toolbar-container');
+        if (ideToolbarContainer) ideToolbarContainer.innerHTML = '';
+        const welcomeOverlay = document.getElementById('ide-welcome-overlay');
+        if (welcomeOverlay) welcomeOverlay.style.display = 'none';
+
+        // 2. Tear down in-memory API registries
+        api.workspace.clear();
+        api.themes.clear();
+        api.icons.clear();
+        api.languages.clear();
+        api.views.clear(); // This clears the registry including 'plugins-manager'
+        await api.terminal.resetRunners();
+
+        // 3. Immediately re-register the built-in Plugins Manager panel
+        api.views.registerSidebarPanel('plugins-manager', {
+            iconClass: 'fa-solid fa-puzzle-piece',
+            title: 'Plugins',
+            render: (container) => {
+                renderPluginsManagerPanel(container);
+            }
+        });
+
+        // 4. Re-initialize baseline standard configurations
+        const themesModule = await import('./themes.js');
+        themesModule.registerDefaultThemes();
+        
+        const iconsModule = await import('./icons.js');
+        iconsModule.registerDefaultIcons();
+        
+        const registryModule = await import('./prosense-db/registry.js');
+        registryModule.registerCoreLanguages(api);
+
+        // 5. Scan disk directories and re-activate with cache-busting query strings
+        printToTerminal('[System] Re-scanning workspace plugin directories...', 'system');
+        const scanned = await this.scan();
+        
+        this.plugins = [];
+        this.allPlugins = [];
+        const disabledIds = this.getDisabledPluginIds();
+
+        for (const plugin of scanned) {
+            const entry = { ...plugin, status: 'active', errorMessage: '' };
+
+            if (plugin.error) {
+                entry.status = 'error';
+                entry.errorMessage = plugin.error;
+                this.allPlugins.push(entry);
+                continue;
+            }
+
+            const { id, name, version, apiVersion, type, main } = plugin;
+
+            if (!id || !name || !version || !apiVersion || !type) {
+                entry.status = 'invalid';
+                entry.errorMessage = 'Missing required metadata';
+                this.allPlugins.push(entry);
+                continue;
+            }
+
+            if (!this.isCompatible(apiVersion)) {
+                entry.status = 'incompatible';
+                entry.errorMessage = `Requires API ${apiVersion}`;
+                this.allPlugins.push(entry);
+                continue;
+            }
+
+            if (disabledIds.includes(id)) {
+                entry.status = 'disabled';
+                this.allPlugins.push(entry);
+                continue;
+            }
+
+            this.plugins.push(plugin);
+            this.allPlugins.push(entry);
+
+            if (main) {
+                const entryUrl = `../${plugin._relativePath}/${main}?t=${Date.now()}`;
+                try {
+                    const module = await import(entryUrl);
+                    if (typeof module.activate === 'function') {
+                        module.activate(api);
+                        printToTerminal(`[System] Re-activated: ${name}`, 'system');
+                    } else {
+                        entry.status = 'warning';
+                        entry.errorMessage = 'Entry script missing activate() export';
+                    }
+                } catch (err) {
+                    entry.status = 'error';
+                    entry.errorMessage = err.message;
+                    printToTerminal(`[Plugin Error] Failed to reload "${name}": ${err.message}`, 'system');
+                }
+            }
+        }
+
+        // 6. Redraw application layout selectors
+        const themeSelector = document.getElementById('theme-selector');
+        const iconSelector = document.getElementById('icon-selector');
+
+        themesModule.renderThemeSelector(themeSelector);
+        iconsModule.renderIconSelector(iconSelector);
+
+        // Re-apply style parameters
+        const activeTheme = localStorage.getItem('editor-theme-preset') || 'vs-dark';
+        themesModule.applyTheme(activeTheme);
+
+        // Refresh dynamically contributed views
+        if (typeof window.renderDynamicSidebarPanels === 'function') window.renderDynamicSidebarPanels();
+        if (typeof window.renderDynamicSettings === 'function') window.renderDynamicSettings();
+        if (typeof window.renderIdeSelector === 'function') window.renderIdeSelector();
+
+        // Restore active IDE if it exists
+        const savedActiveIdeId = api.workspace.ides.has(api.workspace.activeIdeId) ? api.workspace.activeIdeId : null;
+        if (savedActiveIdeId) {
+            window.switchWorkspaceIDE(savedActiveIdeId);
+        } else {
+            window.switchWorkspaceIDE('default');
+        }
+
+        // 7. Safely restore open sidebar layout view state with no visual disruption
+        const savedViewId = window.currentActiveView;
+        if (savedViewId && savedViewId !== 'explorer') {
+            const activePanel = api.views.sidebarPanels.get(savedViewId);
+            if (activePanel) {
+                const fileTree = document.getElementById('file-tree');
+                const pluginContent = document.getElementById('sidebar-plugin-content');
+                const sidebarTitle = document.getElementById('sidebar-title');
+                
+                document.querySelectorAll('.activity-icon').forEach(btn => btn.classList.remove('active'));
+                const btn = document.getElementById(`act-btn-${savedViewId}`);
+                if (btn) btn.classList.add('active');
+                
+                if (fileTree) fileTree.style.display = 'none';
+                if (pluginContent) {
+                    pluginContent.style.display = 'block';
+                    pluginContent.innerHTML = '';
+                    activePanel.render(pluginContent);
+                }
+                if (sidebarTitle) sidebarTitle.textContent = activePanel.title.toUpperCase();
+            }
+        }
+
+        printToTerminal('[System] Hot-reload complete! All live edits successfully synchronized.', 'system');
+    }
+
     async validateAndRegister(scannedPlugins) {
+        this.plugins = [];
+        this.allPlugins = [];
+        const disabledIds = this.getDisabledPluginIds();
+
         if (scannedPlugins.length === 0) {
             printToTerminal('[System] No custom extensions or IDEs discovered.', 'system');
             return;
         }
 
         for (const plugin of scannedPlugins) {
+            const entry = { ...plugin, status: 'active', errorMessage: '' };
+
             if (plugin.error) {
+                entry.status = 'error';
+                entry.errorMessage = plugin.error;
+                this.allPlugins.push(entry);
                 printToTerminal(`[Plugin Warning] Skipping "${plugin._dirName}": ${plugin.error}`, 'system');
                 continue;
             }
 
             const { id, name, version, apiVersion, type, main } = plugin;
 
-            // Enforce schema completeness
             if (!id || !name || !version || !apiVersion || !type) {
-                printToTerminal(`[Plugin Warning] Skipping "${plugin._dirName}": Missing required package.json fields (id, name, version, apiVersion, or type).`, 'system');
+                entry.status = 'invalid';
+                entry.errorMessage = 'Missing required package.json fields';
+                this.allPlugins.push(entry);
+                printToTerminal(`[Plugin Warning] Skipping "${plugin._dirName}": Missing metadata.`, 'system');
                 continue;
             }
 
-            // Check API version compatibility
             if (!this.isCompatible(apiVersion)) {
-                printToTerminal(`[Plugin Error] "${name}" (${id}) requires API version ${apiVersion}. Host API version is ${CORE_API_VERSION}.`, 'system');
+                entry.status = 'incompatible';
+                entry.errorMessage = `Requires API version ${apiVersion}. Host runs ${CORE_API_VERSION}`;
+                this.allPlugins.push(entry);
+                printToTerminal(`[Plugin Error] "${name}" requires API version ${apiVersion}.`, 'system');
+                continue;
+            }
+
+            if (disabledIds.includes(id)) {
+                entry.status = 'disabled';
+                this.allPlugins.push(entry);
+                printToTerminal(`[System] Plugin "${name}" is disabled. Skipping activation.`, 'system');
                 continue;
             }
 
             this.plugins.push(plugin);
+            this.allPlugins.push(entry);
             printToTerminal(`[System] Discovered and validated ${type}: ${name} [v${version}]`, 'system');
 
-            // Dynamically activate the plugin if an entry point is defined
             if (main) {
                 const entryUrl = `../${plugin._relativePath}/${main}`;
                 try {
@@ -80,21 +265,22 @@ export class PluginManager {
                         module.activate(api);
                         printToTerminal(`[System] Activated plugin: ${name}`, 'system');
                     } else {
+                        entry.status = 'warning';
+                        entry.errorMessage = 'Active entry script does not export an activate() function';
                         printToTerminal(`[Plugin Warning] "${name}" does not export an "activate" function.`, 'system');
                     }
                 } catch (err) {
+                    entry.status = 'error';
+                    entry.errorMessage = err.message;
                     printToTerminal(`[Plugin Error] Failed to activate "${name}": ${err.message}`, 'system');
                     console.error(err);
                 }
             }
         }
 
-        printToTerminal(`[System] Scanning complete. Active plugin(s): ${this.plugins.length}`, 'system');
+        printToTerminal(`[System] Scanning complete. Discovered ${this.plugins.length} active plugin(s).`, 'system');
     }
 
-    /**
-     * Validates compatibility based on major version alignment.
-     */
     isCompatible(pluginApiVersion) {
         const coreParts = CORE_API_VERSION.split('.');
         const pluginParts = pluginApiVersion.split('.');
@@ -107,3 +293,241 @@ export class PluginManager {
 }
 
 export const pluginManager = new PluginManager();
+
+/**
+ * Programmatic Plugins Panel HTML Renderer with Hot-Reload Controls
+ */
+export function renderPluginsManagerPanel(container) {
+    container.innerHTML = '';
+
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'flex';
+    wrapper.style.flexDirection = 'column';
+    wrapper.style.gap = '14px';
+    wrapper.style.fontFamily = 'var(--font-ui)';
+
+    const header = document.createElement('div');
+    header.style.display = 'flex';
+    header.style.justifyContent = 'space-between';
+    header.style.alignItems = 'center';
+    header.style.borderBottom = '1px solid var(--border-color)';
+    header.style.paddingBottom = '8px';
+
+    const title = document.createElement('span');
+    title.textContent = 'PLUGINS MANAGER';
+    title.style.fontSize = '11px';
+    title.style.fontWeight = '600';
+    title.style.letterSpacing = '0.8px';
+    title.style.color = 'var(--text-muted)';
+    header.appendChild(title);
+
+    const headerBtns = document.createElement('div');
+    headerBtns.style.display = 'flex';
+    headerBtns.style.gap = '6px';
+
+    // 1. Dynamic Hot-Reload Controller Trigger (With Added Exception Safeguards)
+    const reloadBtn = document.createElement('button');
+    reloadBtn.id = 'plugin-reload-btn';
+    reloadBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i> Reload';
+    reloadBtn.style.padding = '3px 8px';
+    reloadBtn.style.fontSize = '10px';
+    reloadBtn.style.cursor = 'pointer';
+    reloadBtn.style.background = 'var(--bg-button)';
+    reloadBtn.style.color = 'var(--text-main)';
+    reloadBtn.style.border = '1px solid var(--border-color)';
+    reloadBtn.style.borderRadius = '4px';
+    
+    reloadBtn.addEventListener('click', async () => {
+        reloadBtn.disabled = true;
+        reloadBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate fa-spin"></i> Reloading...';
+        try {
+            await pluginManager.reloadAllPlugins();
+        } catch (err) {
+            console.error('[System Error] Hot-reload failed:', err);
+        } finally {
+            // Guarantee layout status restoration even if DOM transitions race
+            reloadBtn.disabled = false;
+            reloadBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i> Reload';
+        }
+    });
+    headerBtns.appendChild(reloadBtn);
+
+    // 2. Hard Application Restart Trigger
+    const restartBtn = document.createElement('button');
+    restartBtn.id = 'plugin-restart-btn';
+    restartBtn.innerHTML = '<i class="fa-solid fa-rotate-right"></i> Restart';
+    restartBtn.style.padding = '3px 8px';
+    restartBtn.style.fontSize = '10px';
+    restartBtn.style.display = 'none'; 
+    restartBtn.style.borderRadius = '4px';
+    
+    restartBtn.addEventListener('click', () => {
+        const isElectron = typeof window !== 'undefined' && window.process && window.process.type;
+        if (isElectron) {
+            window.require('electron').ipcRenderer.invoke('relaunch-app');
+        } else {
+            window.location.reload();
+        }
+    });
+    headerBtns.appendChild(restartBtn);
+
+    header.appendChild(headerBtns);
+    wrapper.appendChild(header);
+
+    const listContainer = document.createElement('div');
+    listContainer.style.display = 'flex';
+    listContainer.style.flexDirection = 'column';
+    listContainer.style.gap = '10px';
+
+    const allScanned = pluginManager.allPlugins;
+
+    if (allScanned.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.color = 'var(--text-muted)';
+        empty.style.fontSize = '12px';
+        empty.style.textAlign = 'center';
+        empty.style.padding = '24px 0';
+        empty.textContent = 'No plugins discovered inside custom/ directories.';
+        listContainer.appendChild(empty);
+    } else {
+        allScanned.forEach(plugin => {
+            const card = document.createElement('div');
+            card.style.background = 'var(--bg-darker)';
+            card.style.border = '1px solid var(--border-color)';
+            card.style.borderRadius = '6px';
+            card.style.padding = '10px';
+            card.style.display = 'flex';
+            card.style.flexDirection = 'column';
+            card.style.gap = '6px';
+
+            const topRow = document.createElement('div');
+            topRow.style.display = 'flex';
+            topRow.style.justifyContent = 'space-between';
+            topRow.style.alignItems = 'center';
+
+            const nameText = document.createElement('span');
+            nameText.style.fontWeight = '600';
+            nameText.style.fontSize = '12px';
+            nameText.style.color = 'var(--text-main)';
+            nameText.textContent = plugin.name || plugin._dirName;
+
+            const verBadge = document.createElement('span');
+            verBadge.style.fontSize = '10px';
+            verBadge.style.color = 'var(--text-muted)';
+            verBadge.style.background = 'rgba(125,125,125,0.1)';
+            verBadge.style.padding = '1px 5px';
+            verBadge.style.borderRadius = '3px';
+            verBadge.textContent = plugin.version ? `v${plugin.version}` : 'N/A';
+
+            topRow.appendChild(nameText);
+            topRow.appendChild(verBadge);
+            card.appendChild(topRow);
+
+            const descText = document.createElement('p');
+            descText.style.fontSize = '11px';
+            descText.style.color = 'var(--text-muted)';
+            descText.style.margin = '0';
+            descText.style.lineHeight = '1.4';
+            descText.textContent = plugin.description || 'No description provided.';
+            card.appendChild(descText);
+
+            const actionRow = document.createElement('div');
+            actionRow.style.display = 'flex';
+            actionRow.style.justifyContent = 'space-between';
+            actionRow.style.alignItems = 'center';
+            actionRow.style.marginTop = '4px';
+
+            const statusBadge = document.createElement('span');
+            statusBadge.style.fontSize = '10px';
+            statusBadge.style.fontWeight = '500';
+            statusBadge.style.padding = '1px 6px';
+            statusBadge.style.borderRadius = '10px';
+
+            let showButton = false;
+            let buttonText = '';
+
+            switch(plugin.status) {
+                case 'active':
+                    statusBadge.textContent = 'Active';
+                    statusBadge.style.color = '#4caf50';
+                    statusBadge.style.background = 'rgba(76,175,80,0.1)';
+                    showButton = true;
+                    buttonText = 'Disable';
+                    break;
+                case 'disabled':
+                    statusBadge.textContent = 'Disabled';
+                    statusBadge.style.color = 'var(--text-muted)';
+                    statusBadge.style.background = 'rgba(125,125,125,0.15)';
+                    showButton = true;
+                    buttonText = 'Enable';
+                    break;
+                case 'incompatible':
+                    statusBadge.textContent = 'Incompatible';
+                    statusBadge.style.color = '#ff9800';
+                    statusBadge.style.background = 'rgba(255,152,0,0.1)';
+                    descText.innerHTML += `<div style="color:#ef5350; margin-top:4px; font-size:10px;">Error: ${plugin.errorMessage}</div>`;
+                    break;
+                case 'error':
+                case 'invalid':
+                    statusBadge.textContent = 'Error';
+                    statusBadge.style.color = '#ef5350';
+                    statusBadge.style.background = 'rgba(239,83,80,0.1)';
+                    descText.innerHTML += `<div style="color:#ef5350; margin-top:4px; font-size:10px;">Error: ${plugin.errorMessage}</div>`;
+                    break;
+            }
+
+            const badgeContainer = document.createElement('div');
+            badgeContainer.style.display = 'flex';
+            badgeContainer.style.alignItems = 'center';
+            badgeContainer.style.gap = '6px';
+            
+            // Re-appended statusBadge cleanly to ensure it renders correctly on cards
+            badgeContainer.appendChild(statusBadge);
+            
+            // Build type indicators
+            const iconSpan = document.createElement('span');
+            iconSpan.className = 'prosense-type-icon';
+            iconSpan.innerHTML = `<i class="fa-solid ${plugin.type === 'ide' ? 'fa-laptop-code' : 'fa-puzzle-piece'}" style="font-size:10px; color:var(--accent-color);"></i>`;
+            badgeContainer.appendChild(iconSpan);
+
+            const typeText = document.createElement('span');
+            typeText.style.fontSize = '9px';
+            typeText.style.textTransform = 'uppercase';
+            typeText.style.letterSpacing = '0.5px';
+            typeText.style.color = 'var(--text-muted)';
+            typeText.textContent = plugin.type || 'extension';
+            badgeContainer.appendChild(typeText);
+            
+            actionRow.appendChild(badgeContainer);
+
+            if (showButton && plugin.id) {
+                const actionBtn = document.createElement('button');
+                actionBtn.textContent = buttonText;
+                actionBtn.style.padding = '2px 8px';
+                actionBtn.style.fontSize = '11px';
+                actionBtn.style.background = 'var(--bg-button)';
+                actionBtn.style.color = 'var(--text-main)';
+                actionBtn.style.border = '1px solid var(--border-color)';
+                actionBtn.style.borderRadius = '3px';
+                actionBtn.style.cursor = 'pointer';
+
+                actionBtn.addEventListener('click', () => {
+                    const shouldDisable = buttonText === 'Disable';
+                    pluginManager.togglePluginState(plugin.id, shouldDisable);
+                    const restartNeeded = document.getElementById('plugin-restart-btn');
+                    if (restartNeeded) restartNeeded.style.display = 'inline-block';
+                    
+                    plugin.status = shouldDisable ? 'disabled' : 'active';
+                    renderPluginsManagerPanel(container);
+                });
+                actionRow.appendChild(actionBtn);
+            }
+
+            card.appendChild(actionRow);
+            listContainer.appendChild(card);
+        });
+    }
+    
+    wrapper.appendChild(listContainer);
+    container.appendChild(wrapper);
+}

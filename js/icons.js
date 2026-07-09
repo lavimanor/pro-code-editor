@@ -48,10 +48,12 @@ const DEFAULT_ICON_PACKS = {
     }
 };
 
-// Register default icon packs
-Object.entries(DEFAULT_ICON_PACKS).forEach(([key, config]) => {
-    api.icons.register(key, config);
-});
+export function registerDefaultIcons() {
+    Object.entries(DEFAULT_ICON_PACKS).forEach(([key, config]) => {
+        api.icons.register(key, config);
+    });
+}
+registerDefaultIcons(); // run once on standard script load
 
 /**
  * Renders registered options dynamically to the settings element

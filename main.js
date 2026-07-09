@@ -395,3 +395,24 @@ ipcMain.handle('register-runner', (event, ext, config) => {
     RUN_CONFIG_REGISTRY[cleanExt] = config;
     return true;
 });
+
+// =====================================================================
+//  System Environment Control Bridge (App Relauncher & Runner Reset)
+// =====================================================================
+ipcMain.handle('relaunch-app', () => {
+    app.relaunch();
+    app.exit(0);
+});
+
+// IPC Handler to reset dynamic runtime executions back to run-config defaults (Added Fix)
+ipcMain.handle('reset-runners', () => {
+    try {
+        // Delete Node require cache to ensure fresh values if run-config.js was edited
+        delete require.cache[require.resolve('./run-config')];
+        const defaults = require('./run-config');
+        RUN_CONFIG_REGISTRY = { ...defaults };
+    } catch (err) {
+        console.error('Failed to reset run config default values:', err);
+    }
+    return true;
+});

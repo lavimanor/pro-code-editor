@@ -307,10 +307,12 @@ const DEFAULT_THEMES = {
     }
 };
 
-// Register core default themes on startup
-Object.entries(DEFAULT_THEMES).forEach(([key, config]) => {
-    api.themes.register(key, config);
-});
+export function registerDefaultThemes() {
+    Object.entries(DEFAULT_THEMES).forEach(([key, config]) => {
+        api.themes.register(key, config);
+    });
+}
+registerDefaultThemes(); // run once on standard script load
 
 export function applyTheme(themeKey) {
     const theme = api.themes.get(themeKey);

@@ -17,6 +17,10 @@ class ThemesAPI {
     getAll() {
         return Object.fromEntries(this.registry.entries());
     }
+
+    clear() {
+        this.registry.clear();
+    }
 }
 
 class IconsAPI {
@@ -37,6 +41,10 @@ class IconsAPI {
 
     getAll() {
         return Object.fromEntries(this.registry.entries());
+    }
+
+    clear() {
+        this.registry.clear(); // <-- Added this method to prevent the TypeError
     }
 }
 
@@ -69,6 +77,11 @@ class LanguagesAPI {
     getParserRules(parserId) {
         return this.parserRules.get(parserId);
     }
+
+    clear() {
+        this.languages.clear();
+        this.parserRules.clear();
+    }
 }
 
 class TerminalAPI {
@@ -88,8 +101,12 @@ class TerminalAPI {
             if (typeof window.updateRunnableExtensions === 'function') {
                 await window.updateRunnableExtensions();
             }
-        } else {
-            console.warn('[API] registerRunner is only supported in the Electron desktop context.');
+        }
+    }
+
+    async resetRunners() {
+        if (this.isElectron && this.ipcRenderer) {
+            await this.ipcRenderer.invoke('reset-runners');
         }
     }
 }
@@ -113,19 +130,20 @@ class ViewsAPI {
             window.renderDynamicSettings();
         }
     }
+
+    clear() {
+        this.sidebarPanels.clear();
+        this.customSettings.clear();
+    }
 }
 
 class WorkspaceAPI {
     constructor() {
-        this.ides = new Map(); // Map of registered custom IDE environments
+        this.ides = new Map(); 
         this.activeIdeId = null;
     }
 
-    /**
-     * Registers a new custom IDE workspace configuration
-     */
     registerIDE(id, config) {
-        // config: { name: 'Python IDE', onActivate: (ctx) => {}, onDeactivate: () => {}, getWelcomePageHTML?: () => string }
         this.ides.set(id, config);
         if (typeof window.renderIdeSelector === 'function') {
             window.renderIdeSelector();
@@ -134,6 +152,14 @@ class WorkspaceAPI {
 
     getActiveIDE() {
         return this.activeIdeId ? this.ides.get(this.activeIdeId) : null;
+    }
+
+    clear() {
+        const activeIde = this.getActiveIDE();
+        if (activeIde && typeof activeIde.onDeactivate === 'function') {
+            try { activeIde.onDeactivate(); } catch (err) { console.error(err); }
+        }
+        this.ides.clear();
     }
 }
 

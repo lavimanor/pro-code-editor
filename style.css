@@ -880,3 +880,66 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     height: 16px;
     cursor: pointer;
 }
+
+/* Custom Sidebar and bottom panel size rules */
+#sidebar {
+    flex-shrink: 0;
+    transition: width 0.05s ease-out; /* Slight smoothing transition for resizing changes */
+}
+
+#bottom-panel {
+    flex-shrink: 0;
+    transition: height 0.05s ease-out;
+}
+
+/* Splitter / Resizer Layout Bars */
+.resizer-v {
+    width: 6px; /* Slightly wider click target */
+    background: transparent;
+    cursor: col-resize;
+    z-index: 15;
+    transition: background 0.15s ease;
+    align-self: stretch;
+}
+.resizer-v:hover, .resizer-v.dragging {
+    background: var(--accent-color);
+}
+
+.resizer-h {
+    height: 6px; /* Slightly wider click target */
+    background: transparent;
+    cursor: row-resize;
+    z-index: 15;
+    transition: background 0.15s ease;
+    width: 100%;
+}
+.resizer-h:hover, .resizer-h.dragging {
+    background: var(--accent-color);
+}
+
+/* Automatic hide configurations for collapsed layouts */
+#sidebar.collapsed-bar + .resizer-v {
+    display: none !important;
+}
+
+#bottom-panel.hidden-panel {
+    display: none !important;
+}
+
+.resizer-h:has(+ #bottom-panel.hidden-panel) {
+    display: none !important;
+}
+
+/* High-Performance Drag Shielding Overlay */
+body.layout-resizing {
+    user-select: none !important;
+    -webkit-user-select: none;
+}
+body.layout-resizing * {
+    pointer-events: none !important; /* Disables events on text fields to prevent focus loss */
+}
+body.layout-resizing .resizer-v.dragging,
+body.layout-resizing .resizer-h.dragging {
+    pointer-events: auto !important;
+    background: var(--accent-color) !important;
+}
