@@ -404,6 +404,43 @@ ipcMain.handle('relaunch-app', () => {
     app.exit(0);
 });
 
+// Recursively copies a directory (Added Fix)
+function copyRecursiveSync(src, dest) {
+    const exists = fs.existsSync(src);
+    const stats = exists && fs.statSync(src);
+    const isDirectory = exists && stats.isDirectory();
+    if (isDirectory) {
+        if (!fs.existsSync(dest)) {
+            fs.mkdirSync(dest);
+        }
+        fs.readdirSync(src).forEach(function(childItemName) {
+            copyRecursiveSync(path.join(src, childItemName),
+                              path.join(dest, childItemName));
+        });
+    } else {
+        fs.copyFileSync(src, dest);
+    }
+}
+
+// IPC handler to copy predefined IDE template directories recursively (Added Fix)
+ipcMain.handle('copy-ide-template', async (event, ideId, templateFolder, targetPath) => {
+    const customDir = path.join(__dirname, 'custom');
+    const idesDir = path.join(customDir, 'ides');
+    const ideDir = path.join(idesDir, ideId);
+    const sourceDir = path.join(ideDir, templateFolder);
+
+    if (!fs.existsSync(sourceDir)) {
+        return { success: false, error: `Template path not found: ${sourceDir}` };
+    }
+
+    try {
+        copyRecursiveSync(sourceDir, targetPath);
+        return { success: true };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
 // IPC Handler to reset dynamic runtime executions back to run-config defaults (Added Fix)
 ipcMain.handle('reset-runners', () => {
     try {
@@ -413,6 +450,17 @@ ipcMain.handle('reset-runners', () => {
         RUN_CONFIG_REGISTRY = { ...defaults };
     } catch (err) {
         console.error('Failed to reset run config default values:', err);
+    }
+    return true;
+});
+
+// Workaround for Electron focus-loss bug after native alerts/confirms (Added Fix)
+ipcMain.handle('focus-fix', () => {
+    const wins = BrowserWindow.getAllWindows();
+    if (wins.length > 0) {
+        // Blurring and refocusing the window restores input states on Windows
+        wins[0].blur();
+        wins[0].focus();
     }
     return true;
 });

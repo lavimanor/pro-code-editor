@@ -1,10 +1,24 @@
 import { api } from './api-core.js';
 
+// Universal fallback rules: Isolated brackets into stand-alone token colors (Added Fix)
+const genericFallbackRules = [
+    { type: 'comment', regex: /\/\*[\s\S]*?\*\/|\/\/.*|#.*|--.*/ },
+    { type: 'string', regex: /`(?:\\.|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/ },
+    { type: 'number', regex: /\b\d+(?:\.\d+)?\b/ },
+    { type: 'bracket', regex: /[{}()[\]]/ },
+    { type: 'punctuation', regex: /[.,;:?]|=>|&&|\|\||[-=+\/*%!<>^&|~]/ }
+];
+
+// Compile universal fallback rules once on load
+const compiledGenericModel = {
+    regex: new RegExp(genericFallbackRules.map(rule => `(${rule.regex.source})`).join('|'), 'g'),
+    types: genericFallbackRules.map(rule => rule.type)
+};
+
 /**
- * Standard single-regex tokenization parser:
- * Parses text streams using compiled capture group offsets.
+ * Base Tokenizer: Match and split text strictly against a regex model.
  */
-function tokenize(text, compiledModel) {
+function baseTokenize(text, compiledModel) {
     const tokens = [];
     let lastIndex = 0;
     let match;
@@ -58,6 +72,39 @@ function tokenize(text, compiledModel) {
 }
 
 /**
+ * Layered Tokenizer with Fallback Support:
+ * Tokenizes text using the primary language model first, then sub-tokenizes 
+ * any unmatched text blocks using the universal generic model.
+ */
+function tokenize(text, compiledModel) {
+    // If we are already running on the fallback model itself, return the base tokenizer
+    if (compiledModel === compiledGenericModel) {
+        return baseTokenize(text, compiledModel);
+    }
+
+    const primaryTokens = baseTokenize(text, compiledModel);
+    const finalTokens = [];
+
+    primaryTokens.forEach(token => {
+        if (token.type === 'text') {
+            // Sub-tokenize unmatched text blocks using fallback rules
+            const fallbackTokens = baseTokenize(token.text, compiledGenericModel);
+            fallbackTokens.forEach(subToken => {
+                finalTokens.push({
+                    type: subToken.type,
+                    text: subToken.text,
+                    start: token.start + subToken.start
+                });
+            });
+        } else {
+            finalTokens.push(token);
+        }
+    });
+
+    return finalTokens;
+}
+
+/**
  * Helper to offset matched token index positions relative to raw file coordinates.
  */
 function tokenizeWithOffset(text, compiledModel, offset) {
@@ -69,7 +116,7 @@ function tokenizeWithOffset(text, compiledModel, offset) {
 }
 
 /**
- * Sub-Language Interpreter (Added Feature):
+ * Sub-Language Interpreter:
  * Recursively parses HTML files, extracting and styling style blocks and 
  * inline scripts using the respective CSS and JS dynamic registers.
  */
@@ -212,7 +259,7 @@ function escapeAndMarkChar(char, globalIndex, highlightIndices, cursorIndex) {
 }
 
 /**
- * Entry render layer: Routes text streams to standard or sub-language split tokenizers.
+ * Entry render layer: Routes text streams to standard, sub-language split, or universal fallback tokenizers.
  */
 export function renderSyntaxHighlighting(text, fileName, highlightIndices, cursorIndex) {
     const ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
@@ -231,25 +278,23 @@ export function renderSyntaxHighlighting(text, fileName, highlightIndices, curso
         }
     }
 
-    if (tokens) {
-        tokens.forEach(token => {
-            let tokenHTML = '';
-            for (let i = 0; i < token.text.length; i++) {
-                const globalIndex = token.start + i;
-                tokenHTML += escapeAndMarkChar(token.text[i], globalIndex, highlightIndices, cursorIndex);
-            }
-            if (token.type !== 'text') {
-                backdropHTML += `<span class="syntax-${token.type}">${tokenHTML}</span>`;
-            } else {
-                backdropHTML += tokenHTML;
-            }
-        });
-    } else {
-        // Plain text fallback if no registered language model is active
-        for (let i = 0; i < text.length; i++) {
-            backdropHTML += escapeAndMarkChar(text[i], i, highlightIndices, cursorIndex);
-        }
+    // If no specific language tokens are compiled, default to the universal generic tokenizer
+    if (!tokens) {
+        tokens = tokenize(text, compiledGenericModel);
     }
+
+    tokens.forEach(token => {
+        let tokenHTML = '';
+        for (let i = 0; i < token.text.length; i++) {
+            const globalIndex = token.start + i;
+            tokenHTML += escapeAndMarkChar(token.text[i], globalIndex, highlightIndices, cursorIndex);
+        }
+        if (token.type !== 'text') {
+            backdropHTML += `<span class="syntax-${token.type}">${tokenHTML}</span>`;
+        } else {
+            backdropHTML += tokenHTML;
+        }
+    });
 
     if (cursorIndex === text.length) {
         backdropHTML += `<span id="prosense-caret-marker"></span>`;

@@ -186,6 +186,7 @@ class WorkspaceAPI {
             try { activeIde.onDeactivate(); } catch (err) { console.error(err); }
         }
         this.ides.clear();
+        this.activeIdeId = null; // Reset the active ID to prevent stale references (Added Fix)
     }
 }
 

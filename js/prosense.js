@@ -301,21 +301,22 @@ function evaluateProSense(fileName) {
     const completions = [...dbCompletions, ...localCompletions, ...externCompletions, ...customSnippets];
 
     const word = getWordBeforeCursor();
+    const cursor = editorEl.selectionStart;
+    const charBefore = editorEl.value[cursor - word.length - 1];
+    const isMemberAccess = charBefore === '.';
     
-    if (!word || completions.length === 0) {
+    // Allow empty words if we are right after a dot (member access context)
+    if ((!word && !isMemberAccess) || completions.length === 0) {
         hideProSense();
         return;
     }
 
     const wordLower = word.toLowerCase();
-    if (completions.some(item => item.label.toLowerCase() === wordLower)) {
+    // Only verify exact matching constraints if a word is typed
+    if (word && completions.some(item => item.label.toLowerCase() === wordLower)) {
         hideProSense();
         return;
     }
-
-    const cursor = editorEl.selectionStart;
-    const charBefore = editorEl.value[cursor - word.length - 1];
-    const isMemberAccess = charBefore === '.';
 
     const usage = getUsageMap();
 

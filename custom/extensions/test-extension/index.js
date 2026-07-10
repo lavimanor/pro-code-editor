@@ -41,7 +41,8 @@ export function activate(api) {
             '--syntax-function': '#90e0ef',
             '--syntax-builtin': '#00b4d8',
             '--syntax-number': '#00b4d8',
-            '--syntax-punctuation': '#e0e1dd'
+            '--syntax-punctuation': '#e0e1dd',
+            '--syntax-bracket': '#3267fc'
         }
     });
 

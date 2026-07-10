@@ -248,90 +248,126 @@ window.switchWorkspaceIDE = (ideId) => {
     api.workspace.activeIdeId = ideId;
     printToTerminal(`[System] Switched to ${newIde.name} environment.`, 'system');
 
-    // Build the dynamic workspace context passed to the IDE active hooks
-    const context = {
-        addToolbarButton: (id, label, iconClass, onClick) => {
-            const btn = document.createElement('button');
-            btn.id = `ide-btn-${id}`;
-            btn.className = 'ide-toolbar-button';
-            btn.style.background = 'var(--bg-button)';
-            btn.style.color = 'var(--text-main)';
-            btn.style.border = '1px solid var(--border-color)';
-            btn.style.padding = '4px 10px';
-            btn.style.borderRadius = '4px';
-            btn.style.fontSize = '12px';
-            btn.style.display = 'inline-flex';
-            btn.style.alignItems = 'center';
-            btn.style.gap = '6px';
-            btn.style.cursor = 'pointer';
-            btn.innerHTML = `<i class="${iconClass}"></i> ${label}`;
-            btn.addEventListener('click', onClick);
-            
-            if (ideToolbarContainer) {
-                ideToolbarContainer.appendChild(btn);
-            }
-        },
-        showWelcome: (html) => showWelcomePage(html),
-        hideWelcome: () => hideWelcomePage(),
+    const isElectronApp = typeof window !== 'undefined' && window.process && window.process.type;
 
-        /**
-         * Project Structure Generator (Added in Step 4):
-         * Generates complete template layouts (folders, nesting, index files) 
-         * recursively under the opened workspace directory handle.
-         */
-        createProjectStructure: async (structure) => {
-            if (!rootDirectoryHandle) {
-                alert('Please open a folder workspace first.');
-                return false;
-            }
-            
-            printToTerminal('[System] Generating project template directory structures...', 'system');
-            try {
-                // 1. Generate folder architectures recursively
-                if (structure.folders) {
-                    for (const folder of structure.folders) {
-                        const segments = folder.split('/');
-                        let currentDir = rootDirectoryHandle;
-                        for (const segment of segments) {
-                            if (segment) {
-                                currentDir = await createDirectoryHandle(currentDir, segment);
+        // Build the dynamic workspace context passed to the IDE active hooks
+        const context = {
+            addToolbarButton: (id, label, iconClass, onClick) => {
+                const btn = document.createElement('button');
+                btn.id = `ide-btn-${id}`;
+                btn.className = 'ide-toolbar-button';
+                btn.style.background = 'var(--bg-button)';
+                btn.style.color = 'var(--text-main)';
+                btn.style.border = '1px solid var(--border-color)';
+                btn.style.padding = '4px 10px';
+                btn.style.borderRadius = '4px';
+                btn.style.fontSize = '12px';
+                btn.style.display = 'inline-flex';
+                btn.style.alignItems = 'center';
+                btn.style.gap = '6px';
+                btn.style.cursor = 'pointer';
+                btn.innerHTML = `<i class="${iconClass}"></i> ${label}`;
+                btn.addEventListener('click', onClick);
+                
+                if (ideToolbarContainer) {
+                    ideToolbarContainer.appendChild(btn);
+                }
+            },
+            showWelcome: (html) => showWelcomePage(html),
+            hideWelcome: () => hideWelcomePage(),
+            openFile: async (fileHandle) => {
+                if (fileHandle) {
+                    await handleOpenFile(fileHandle);
+                }
+            },
+            showCustomModal: (config) => showCustomModal(config),
+            copyTemplateFolder: async (templateFolderName) => {
+                if (!isElectronApp || !ipcRenderer) {
+                    alert('Template replication is only supported inside the Desktop Shell environment.');
+                    return false;
+                }
+                if (!rootDirectoryHandle) {
+                    alert('Please open a folder workspace first.');
+                    return false;
+                }
+
+                printToTerminal(`[System] Replicating template directory structure: "${templateFolderName}"...`, 'system');
+                try {
+                    const res = await ipcRenderer.invoke('copy-ide-template', ideId, templateFolderName, rootDirectoryHandle.path);
+                    if (res && res.success) {
+                        printToTerminal('[System] Predefined folder structures copied successfully.', 'system');
+                        await refreshExplorer();
+                        return true;
+                    } else {
+                        const errMsg = res ? res.error : 'Unknown replication error';
+                        printToTerminal(`[System Error] Failed to replicate structures: ${errMsg}`, 'system');
+                        return false;
+                    }
+                } catch (err) {
+                    printToTerminal(`[System Error] Template copy request aborted: ${err.message}`, 'system');
+                    return false;
+                }
+            },
+
+            /**
+             * Project Structure Generator:
+             * Generates complete template layouts (folders, nesting, index files) 
+             * recursively under the opened workspace directory handle.
+             */
+            createProjectStructure: async (structure) => {
+                if (!rootDirectoryHandle) {
+                    alert('Please open a folder workspace first.');
+                    return { success: false, files: {} };
+                }
+                
+                printToTerminal('[System] Generating project template directory structures...', 'system');
+                const createdFiles = {};
+                try {
+                    // 1. Generate folder architectures recursively
+                    if (structure.folders) {
+                        for (const folder of structure.folders) {
+                            const segments = folder.split('/');
+                            let currentDir = rootDirectoryHandle;
+                            for (const segment of segments) {
+                                if (segment) {
+                                    currentDir = await createDirectoryHandle(currentDir, segment);
+                                }
                             }
                         }
                     }
-                }
-                
-                // 2. Generate and write nested index templates
-                if (structure.files) {
-                    for (const [filePath, contents] of Object.entries(structure.files)) {
-                        const segments = filePath.split('/');
-                        const fileName = segments.pop();
-                        
-                        let currentDir = rootDirectoryHandle;
-                        for (const segment of segments) {
-                            if (segment) {
-                                currentDir = await createDirectoryHandle(currentDir, segment);
+                    
+                    // 2. Generate and write nested index templates
+                    if (structure.files) {
+                        for (const [filePath, contents] of Object.entries(structure.files)) {
+                            const segments = filePath.split('/');
+                            const fileName = segments.pop();
+                            
+                            let currentDir = rootDirectoryHandle;
+                            for (const segment of segments) {
+                                if (segment) {
+                                    currentDir = await createDirectoryHandle(currentDir, segment);
+                                }
                             }
+                            
+                            const newFileHandle = await createFileHandle(currentDir, fileName);
+                            await saveFileContents(newFileHandle, contents);
+                            createdFiles[filePath] = newFileHandle;
                         }
-                        
-                        const newFileHandle = await createFileHandle(currentDir, fileName);
-                        await saveFileContents(newFileHandle, contents);
                     }
-                }
-                
-                printToTerminal('[System] Project structure generated successfully!', 'system');
-                
-                // Refresh folder tree visualization on creation completion
-                if (typeof refreshExplorer === 'function') {
+                    
+                    printToTerminal('[System] Project structure generated successfully!', 'system');
+                    
+                    // Refresh folder tree visualization on creation completion
                     await refreshExplorer();
+                    
+                    return { success: true, files: createdFiles };
+                } catch (err) {
+                    printToTerminal(`[System Error] Failed to generate project architecture: ${err.message}`, 'system');
+                    console.error(err);
+                    return { success: false, files: {} };
                 }
-                return true;
-            } catch (err) {
-                printToTerminal(`[System Error] Failed to generate project architecture: ${err.message}`, 'system');
-                console.error(err);
-                return false;
             }
-        }
-    };
+        };
 
     // Invoke workspace entry hooks
     if (typeof newIde.onActivate === 'function') {
@@ -1191,6 +1227,173 @@ function showPrompt(title, placeholder = '') {
     });
 }
 
+function showCustomModal(config) {
+    return new Promise((resolve) => {
+        const modal = document.createElement('div');
+        modal.id = 'dynamic-custom-modal';
+        modal.style.position = 'fixed';
+        modal.style.top = '0';
+        modal.style.left = '0';
+        modal.style.width = '100vw';
+        modal.style.height = '100vh';
+        modal.style.backgroundColor = 'rgba(0, 0, 0, 0.55)';
+        modal.style.display = 'flex';
+        modal.style.justifyContent = 'center';
+        modal.style.alignItems = 'center';
+        modal.style.zIndex = '2000';
+
+        const content = document.createElement('div');
+        content.className = 'modal-content';
+        content.style.backgroundColor = 'var(--bg-sidebar)';
+        content.style.border = '1px solid var(--border-color)';
+        content.style.borderRadius = '6px';
+        content.style.padding = '16px';
+        content.style.width = '350px';
+        content.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.5)';
+        content.style.display = 'flex';
+        content.style.flexDirection = 'column';
+        content.style.gap = '12px';
+
+        const title = document.createElement('h3');
+        title.style.fontSize = '14px';
+        title.style.fontWeight = '600';
+        title.style.color = 'var(--text-main)';
+        title.textContent = config.title || 'Workspace Dialog';
+        content.appendChild(title);
+
+        const formBody = document.createElement('div');
+        formBody.style.display = 'flex';
+        formBody.style.flexDirection = 'column';
+        formBody.style.gap = '10px';
+
+        const inputElements = {};
+
+        (config.inputs || []).forEach(inputConfig => {
+            const itemDiv = document.createElement('div');
+            itemDiv.style.display = 'flex';
+            itemDiv.style.flexDirection = 'column';
+            itemDiv.style.gap = '4px';
+
+            const label = document.createElement('label');
+            label.style.fontSize = '11px';
+            label.style.color = 'var(--text-muted)';
+            label.textContent = inputConfig.label;
+            itemDiv.appendChild(label);
+
+            let input;
+            if (inputConfig.type === 'select') {
+                input = document.createElement('select');
+                input.style.backgroundColor = 'var(--bg-dark)';
+                input.style.border = '1px solid var(--border-color)';
+                input.style.color = 'var(--text-main)';
+                input.style.padding = '6px';
+                input.style.borderRadius = '4px';
+                input.style.outline = 'none';
+                input.style.fontSize = '12px';
+
+                (inputConfig.options || []).forEach(optVal => {
+                    const opt = document.createElement('option');
+                    opt.value = optVal;
+                    opt.textContent = optVal;
+                    if (optVal === inputConfig.defaultValue) opt.selected = true;
+                    input.appendChild(opt);
+                });
+            } else if (inputConfig.type === 'checkbox') {
+                itemDiv.style.flexDirection = 'row';
+                itemDiv.style.alignItems = 'center';
+                itemDiv.style.justifyContent = 'space-between';
+                input = document.createElement('input');
+                input.type = 'checkbox';
+                input.style.width = '16px';
+                input.style.height = '16px';
+                input.style.cursor = 'pointer';
+                input.checked = !!inputConfig.defaultValue;
+            } else {
+                input = document.createElement('input');
+                input.type = inputConfig.type || 'text';
+                input.placeholder = inputConfig.placeholder || '';
+                input.value = inputConfig.defaultValue !== undefined ? inputConfig.defaultValue : '';
+                input.style.backgroundColor = 'var(--bg-dark)';
+                input.style.border = '1px solid var(--border-color)';
+                input.style.color = 'var(--text-main)';
+                input.style.padding = '8px';
+                input.style.borderRadius = '4px';
+                input.style.outline = 'none';
+                input.style.fontSize = '12px';
+            }
+
+            itemDiv.appendChild(input);
+            formBody.appendChild(itemDiv);
+            inputElements[inputConfig.id] = input;
+        });
+
+        content.appendChild(formBody);
+
+        const buttonsDiv = document.createElement('div');
+        buttonsDiv.className = 'modal-buttons flex-row';
+        buttonsDiv.style.justifyContent = 'flex-end';
+        buttonsDiv.style.gap = '8px';
+        buttonsDiv.style.marginTop = '8px';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.style.background = 'none';
+        cancelBtn.style.border = '1px solid var(--border-color)';
+        cancelBtn.textContent = config.cancelLabel || 'Cancel';
+        buttonsDiv.appendChild(cancelBtn);
+
+        const okBtn = document.createElement('button');
+        okBtn.style.backgroundColor = 'var(--accent-color)';
+        okBtn.style.borderColor = 'transparent';
+        okBtn.style.color = '#ffffff';
+        okBtn.textContent = config.okLabel || 'OK';
+        buttonsDiv.appendChild(okBtn);
+
+        content.appendChild(buttonsDiv);
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+
+        const firstTextInput = formBody.querySelector('input[type="text"]');
+        if (firstTextInput) {
+            setTimeout(() => firstTextInput.focus(), 50);
+        }
+
+        function handleOk() {
+            const results = {};
+            Object.entries(inputElements).forEach(([id, element]) => {
+                results[id] = element.type === 'checkbox' ? element.checked : element.value;
+            });
+            cleanup();
+            resolve(results);
+        }
+
+        function handleCancel() {
+            cleanup();
+            resolve(null);
+        }
+
+        function handleKeydown(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleOk();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                handleCancel();
+            }
+        }
+
+        function cleanup() {
+            modal.remove();
+            okBtn.removeEventListener('click', handleOk);
+            cancelBtn.removeEventListener('click', handleCancel);
+            modal.removeEventListener('keydown', handleKeydown);
+        }
+
+        okBtn.addEventListener('click', handleOk);
+        cancelBtn.addEventListener('click', handleCancel);
+        modal.addEventListener('keydown', handleKeydown);
+    });
+}
+
 // Bind activity panel toggles
 const actTerminal = document.getElementById('act-terminal');
 const closePanelBtn = document.getElementById('close-panel-btn');
@@ -1316,8 +1519,8 @@ function initLayoutResizing() {
         e.preventDefault();
         const startX = e.clientX;
         const startWidth = sidebar.offsetWidth;
-        resizerSidebar.className = 'resizer-v dragging';
-        document.body.className = 'layout-resizing';
+        resizerSidebar.classList.add('dragging');
+        document.body.classList.add('layout-resizing');
         document.body.style.cursor = 'col-resize';
 
         let newWidth = startWidth;
@@ -1339,19 +1542,19 @@ function initLayoutResizing() {
         };
 
         const onMouseUp = () => {
-            resizerSidebar.className = 'resizer-v';
-            document.body.className = '';
+            resizerSidebar.classList.remove('dragging');
+            document.body.classList.remove('layout-resizing');
             document.body.style.cursor = '';
 
             // Cache setting permanently on completion
             localStorage.setItem('layout-sidebar-width', newWidth);
 
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
         };
 
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
     });
 
     // 2. Configure Bottom Panel Horizontal Resizer
@@ -1364,8 +1567,8 @@ function initLayoutResizing() {
         e.preventDefault();
         const startY = e.clientY;
         const startHeight = bottomPanel.offsetHeight;
-        resizerTerminal.className = 'resizer-h dragging';
-        document.body.className = 'layout-resizing';
+        resizerTerminal.classList.add('dragging');
+        document.body.classList.add('layout-resizing');
         document.body.style.cursor = 'row-resize';
 
         let newHeight = startHeight;
@@ -1386,19 +1589,19 @@ function initLayoutResizing() {
         };
 
         const onMouseUp = () => {
-            resizerTerminal.className = 'resizer-h';
-            document.body.className = '';
+            resizerTerminal.classList.remove('dragging');
+            document.body.classList.remove('layout-resizing');
             document.body.style.cursor = '';
 
             // Cache setting permanently on completion
             localStorage.setItem('layout-terminal-height', newHeight);
 
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
         };
 
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
     });
 
     // 3. Configure Safeguard Window Clamps
@@ -1409,8 +1612,50 @@ function initLayoutResizing() {
             const safeWidth = Math.max(160, Math.floor(maxAllowedWidth));
             sidebar.style.width = `${safeWidth}px`;
         }
+
+        // Safeguard for terminal panel vertical height
+        const maxAllowedHeight = window.innerHeight / 2;
+        if (bottomPanel.offsetHeight > maxAllowedHeight) {
+            const safeHeight = Math.max(80, Math.floor(maxAllowedHeight));
+            bottomPanel.style.height = `${safeHeight}px`;
+        }
+    });
+
+    // Force-clear layout locks if focus is lost mid-drag (Added Safety Fix)
+    window.addEventListener('blur', () => {
+        if (document.body.classList.contains('layout-resizing')) {
+            document.body.classList.remove('layout-resizing');
+            document.body.style.cursor = '';
+            resizerSidebar.classList.remove('dragging');
+            resizerTerminal.classList.remove('dragging');
+        }
     });
 }
 
 // Fire Boot Loader
 bootEditor();
+
+// =====================================================================
+//  Transparent Focus-Fix Wrappers for Native Dialogs
+// =====================================================================
+if (isElectronApp && ipcRenderer) {
+    const originalAlert = window.alert;
+    window.alert = function(msg) {
+        originalAlert(msg);
+        ipcRenderer.invoke('focus-fix');
+    };
+
+    const originalConfirm = window.confirm;
+    window.confirm = function(msg) {
+        const res = originalConfirm(msg);
+        ipcRenderer.invoke('focus-fix');
+        return res;
+    };
+
+    const originalPrompt = window.prompt;
+    window.prompt = function(msg, defaultVal) {
+        const res = originalPrompt(msg, defaultVal);
+        ipcRenderer.invoke('focus-fix');
+        return res;
+    };
+}

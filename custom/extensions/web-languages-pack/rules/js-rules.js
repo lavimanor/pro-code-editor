@@ -17,6 +17,7 @@ export const jsRules = [
     { type: 'builtin', regex: /\b(?:console|document|window|Math|Array|Object|String|Number|Boolean|Set|Map|Promise|fetch|localStorage|sessionStorage|JSON)\b/ },
     { type: 'number', regex: /\b\d+(?:\.\d+)?\b/ },
     { type: 'function', regex: /\b[a-zA-Z_$][a-zA-Z0-9_$]*(?=\s*\()/ },
-    { type: 'punctuation', regex: /[{}()[\].,;:]/ },
-    { type: 'keyword', regex: /=>|&&|\|\||[=+\-*/!<>%?&|^~]/ } // Logical and arithmetic operators
+    { type: 'bracket', regex: /[{}()[\]]/ }, // Braces and brackets (Added Fix)
+    { type: 'punctuation', regex: /[.,;:]/ },
+    { type: 'punctuation', regex: /=>|&&|\|\||[-=+\/*%!<>^&|~]/ }
 ];

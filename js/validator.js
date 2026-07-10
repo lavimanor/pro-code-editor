@@ -20,6 +20,41 @@ export function validateCode(text, ext) {
 }
 
 /**
+ * Utility to blank out static import/export declarations.
+ * Replaces non-newline characters with spaces to preserve line count and offsets.
+ */
+function blankOutMatch(match) {
+    return match.replace(/[^\r\n]/g, ' ');
+}
+
+function preprocessJSForValidation(text) {
+    let cleanText = text;
+
+    // 1. Blank out import statements (e.g. import { x } from 'y';)
+    const importRegex = /^[ \t]*import\b[\s\S]*?from\s+['"`][^'"`]+['"`];?/gm;
+    cleanText = cleanText.replace(importRegex, blankOutMatch);
+
+    // Matches simple imports: import 'style.css';
+    const importSimpleRegex = /^[ \t]*import\s+['"`][^'"`]+['"`];?/gm;
+    cleanText = cleanText.replace(importSimpleRegex, blankOutMatch);
+
+    // 2. Blank out export re-exports or named exports (e.g. export { x } from 'y';)
+    const exportNamedRegex = /^[ \t]*export\s*\{[\s\S]*?\}(?:\s*from\s+['"`][^'"`]+['"`])?;?/gm;
+    cleanText = cleanText.replace(exportNamedRegex, blankOutMatch);
+
+    // Matches star exports: export * from "..."
+    const exportStarRegex = /^[ \t]*export\s*\*\s*from\s+['"`][^'"`]+['"`];?/gm;
+    cleanText = cleanText.replace(exportStarRegex, blankOutMatch);
+
+    // 3. For inline exports like "export const x = 1;" or "export default class A {}",
+    // blank out "export " or "export default " keywords to allow compile check of inner code.
+    const exportInlineRegex = /^[ \t]*export\s+(?:default\s+)?/gm;
+    cleanText = cleanText.replace(exportInlineRegex, blankOutMatch);
+
+    return cleanText;
+}
+
+/**
  * Checks for unmatched braces, parentheses, and brackets.
  */
 function validateJSBraces(text, errors) {
@@ -182,7 +217,8 @@ function validateJSNative(text, errors) {
     if (errors.length > 0) return;
 
     try {
-        new Function(text);
+        const cleanText = preprocessJSForValidation(text);
+        new Function(cleanText);
     } catch (err) {
         if (err.name === 'SyntaxError' && err.stack) {
             const stackMatch = err.stack.match(/<anonymous>:(\d+):(\d+)/);

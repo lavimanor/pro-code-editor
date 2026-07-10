@@ -62,6 +62,9 @@ export class PluginManager {
     async reloadAllPlugins() {
         printToTerminal('[System] Initiating hot-reload sequence...', 'system');
 
+        // Cache active IDE ID before clearing the workspace registry (Added Fix)
+        const cachedActiveIdeId = api.workspace.activeIdeId;
+
         // 1. Teardown active dynamic toolbar elements and greetings
         const ideToolbarContainer = document.getElementById('ide-toolbar-container');
         if (ideToolbarContainer) ideToolbarContainer.innerHTML = '';
@@ -174,7 +177,7 @@ export class PluginManager {
         if (typeof window.renderIdeSelector === 'function') window.renderIdeSelector();
 
         // Restore active IDE if it exists
-        const savedActiveIdeId = api.workspace.ides.has(api.workspace.activeIdeId) ? api.workspace.activeIdeId : null;
+        const savedActiveIdeId = api.workspace.ides.has(cachedActiveIdeId) ? cachedActiveIdeId : null;
         if (savedActiveIdeId) {
             window.switchWorkspaceIDE(savedActiveIdeId);
         } else {

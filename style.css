@@ -957,3 +957,4 @@ body.layout-resizing .resizer-h.dragging {
 .syntax-builtin { color: var(--syntax-builtin); }
 .syntax-number { color: var(--syntax-number); }
 .syntax-punctuation { color: var(--syntax-punctuation); }
+.syntax-bracket { color: var(--syntax-bracket, #ffd700); font-weight: 500; }

@@ -18,7 +18,8 @@ export const cssRules = [
     { type: 'variable', regex: /--[a-zA-Z0-9_-]+/ },
     { type: 'builtin', regex: /\bvar\([^)]*\)/ },
     
-    { type: 'keyword', regex: /[{};:]/ },
+    { type: 'bracket', regex: /[{}]/ }, // CSS block braces mapped to bracket (Added Fix)
+    { type: 'punctuation', regex: /[;: ]/ },
     { type: 'attr-name', regex: /\b[a-zA-Z-]+(?=\s*:)/ }, // Selects property keys
     { type: 'important', regex: /!important\b/i }
 ];
