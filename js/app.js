@@ -10,7 +10,7 @@ import { renderThemeSelector, applyTheme } from './themes.js';
 import { renderIconSelector } from './icons.js';
 import { registerCoreLanguages } from './prosense-db/registry.js';
 import { renderSyntaxHighlighting } from './syntax.js';
-import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBeforeCursor } from './prosense.js';
+import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBeforeCursor, hideProSense } from './prosense.js';
 import { initMinimapScroll } from './minimap.js';
 import { getCustomSnippets, saveCustomSnippets, renderSnippetsList } from './snippets.js';
 import { initTerminal, toggleTerminal, updateTerminalPrompt, printToTerminal, appendOutputChunk, setRunState } from './terminal.js';
@@ -272,7 +272,65 @@ window.switchWorkspaceIDE = (ideId) => {
             }
         },
         showWelcome: (html) => showWelcomePage(html),
-        hideWelcome: () => hideWelcomePage()
+        hideWelcome: () => hideWelcomePage(),
+
+        /**
+         * Project Structure Generator (Added in Step 4):
+         * Generates complete template layouts (folders, nesting, index files) 
+         * recursively under the opened workspace directory handle.
+         */
+        createProjectStructure: async (structure) => {
+            if (!rootDirectoryHandle) {
+                alert('Please open a folder workspace first.');
+                return false;
+            }
+            
+            printToTerminal('[System] Generating project template directory structures...', 'system');
+            try {
+                // 1. Generate folder architectures recursively
+                if (structure.folders) {
+                    for (const folder of structure.folders) {
+                        const segments = folder.split('/');
+                        let currentDir = rootDirectoryHandle;
+                        for (const segment of segments) {
+                            if (segment) {
+                                currentDir = await createDirectoryHandle(currentDir, segment);
+                            }
+                        }
+                    }
+                }
+                
+                // 2. Generate and write nested index templates
+                if (structure.files) {
+                    for (const [filePath, contents] of Object.entries(structure.files)) {
+                        const segments = filePath.split('/');
+                        const fileName = segments.pop();
+                        
+                        let currentDir = rootDirectoryHandle;
+                        for (const segment of segments) {
+                            if (segment) {
+                                currentDir = await createDirectoryHandle(currentDir, segment);
+                            }
+                        }
+                        
+                        const newFileHandle = await createFileHandle(currentDir, fileName);
+                        await saveFileContents(newFileHandle, contents);
+                    }
+                }
+                
+                printToTerminal('[System] Project structure generated successfully!', 'system');
+                
+                // Refresh folder tree visualization on creation completion
+                if (typeof refreshExplorer === 'function') {
+                    await refreshExplorer();
+                }
+                return true;
+            } catch (err) {
+                printToTerminal(`[System Error] Failed to generate project architecture: ${err.message}`, 'system');
+                console.error(err);
+                return false;
+            }
+        }
     };
 
     // Invoke workspace entry hooks
@@ -626,11 +684,24 @@ editor.addEventListener('scroll', () => {
     minimapIndicator.style.top = `${viewportRatio * maxMinimapScroll}px`;
 });
 
-editor.addEventListener('click', runLayoutRenderEngine);
+editor.addEventListener('click', () => {
+    hideProSense(); // Hide autocomplete if the user clicks elsewhere inside the text area [1]
+    runLayoutRenderEngine();
+});
+
 editor.addEventListener('keyup', (e) => {
-    if(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) {
+    // Hide autocomplete if caret navigates away using Arrow keys [2]
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+        hideProSense();
         runLayoutRenderEngine();
     }
+});
+
+editor.addEventListener('blur', () => {
+    // Hide autocomplete when focus is lost (using a small timeout so clicks on list items register first)
+    setTimeout(() => {
+        hideProSense();
+    }, 150);
 });
 
 editor.addEventListener('keydown', (e) => {

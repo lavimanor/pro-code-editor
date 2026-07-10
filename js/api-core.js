@@ -50,8 +50,9 @@ class IconsAPI {
 
 class LanguagesAPI {
     constructor() {
-        this.languages = new Map();     
-        this.parserRules = new Map();   
+        this.languages = new Map();     // Map: fileExtension -> langConfig
+        this.parserRules = new Map();   // Map: parserId -> array of rules
+        this.highlighters = new Map();  // Map: langId -> compiled syntax regex model
     }
 
     register(langId, config) {
@@ -70,6 +71,30 @@ class LanguagesAPI {
         }
     }
 
+    /**
+     * Compiles and registers custom syntax highlighting rules for a language.
+     * Maps alternate patterns into unified capture-group regex trees for performance.
+     */
+    registerHighlighter(langId, rules) {
+        if (!rules || rules.length === 0) return;
+
+        // Combine regex sources into grouped alternatives: (pattern1)|(pattern2)...
+        const source = rules.map(rule => `(${rule.regex.source})`).join('|');
+        try {
+            const model = {
+                regex: new RegExp(source, 'g'),
+                types: rules.map(rule => rule.type)
+            };
+            this.highlighters.set(langId.toLowerCase(), model);
+        } catch (err) {
+            console.error(`[API Error] Failed to compile syntax highlighter rules for ${langId}:`, err);
+        }
+    }
+
+    getHighlighter(langId) {
+        return this.highlighters.get(langId.toLowerCase());
+    }
+
     get(ext) {
         return this.languages.get(ext.toLowerCase());
     }
@@ -81,6 +106,7 @@ class LanguagesAPI {
     clear() {
         this.languages.clear();
         this.parserRules.clear();
+        this.highlighters.clear(); // Wipes syntax caches to prevent leaks during hot-reloads
     }
 }
 

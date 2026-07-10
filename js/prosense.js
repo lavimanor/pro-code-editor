@@ -99,7 +99,9 @@ export function getWordBeforeCursor() {
 
 function updateWidgetPosition() {
     const marker = document.getElementById('prosense-caret-marker');
-    if (!marker || !editorEl) return;
+    if (!marker || !editorEl) {
+        return;
+    }
 
     const rect = marker.getBoundingClientRect();
     const editorRect = editorEl.getBoundingClientRect();
@@ -217,14 +219,14 @@ function scoreMatch(label, query) {
     let streak = 0;
     let firstIdx = -1;
 
-    for (let li = 0; li < l.length && qi < q.length; li++) {
-        if (l[li] === q[qi]) {
-            if (firstIdx === -1) firstIdx = li;
+    for (let l_idx = 0; l_idx < l.length && qi < q.length; l_idx++) {
+        if (l[l_idx] === q[qi]) {
+            if (firstIdx === -1) firstIdx = l_idx;
             streak++;
             score += 8 + streak * 2; 
-            const prev = label[li - 1];
-            const isBoundary = li === 0 || prev === '_' ||
-                (label[li] >= 'A' && label[li] <= 'Z' && prev >= 'a' && prev <= 'z');
+            const prev = label[l_idx - 1];
+            const isBoundary = l_idx === 0 || prev === '_' ||
+                (label[l_idx] >= 'A' && label[l_idx] <= 'Z' && prev >= 'a' && prev <= 'z');
             if (isBoundary) score += 14;
             qi++;
         } else {
@@ -238,11 +240,45 @@ function scoreMatch(label, query) {
     return score;
 }
 
+/**
+ * Sub-Language Context Tracker:
+ * Checks if the cursor is typing inside a script or style block.
+ */
+function getHtmlContext(text, cursorIndex) {
+    const styleStart = text.toLowerCase().lastIndexOf('<style', cursorIndex);
+    const scriptStart = text.toLowerCase().lastIndexOf('<script', cursorIndex);
+    
+    if (styleStart !== -1 || scriptStart !== -1) {
+        if (styleStart > scriptStart) {
+            const styleEnd = text.toLowerCase().lastIndexOf('</style>', cursorIndex);
+            if (styleEnd === -1 || styleEnd < styleStart) {
+                return 'css'; 
+            }
+        } else {
+            const scriptEnd = text.toLowerCase().lastIndexOf('</script>', cursorIndex);
+            if (scriptEnd === -1 || scriptEnd < scriptStart) {
+                return 'js'; // Returns 'js' to match the active registry keys correctly
+            }
+        }
+    }
+    return 'html';
+}
+
 function evaluateProSense(fileName) {
     if (!editorEl) return;
 
-    const ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
+    let ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
+    
+    if (ext === 'html' || ext === 'htm') {
+        const cursor = editorEl.selectionStart;
+        const subContext = getHtmlContext(editorEl.value, cursor);
+        if (subContext !== 'html') {
+            ext = subContext; 
+        }
+    }
+
     const config = api.languages.get(ext);
+    
     if (!config) {
         hideProSense();
         return;
@@ -265,6 +301,7 @@ function evaluateProSense(fileName) {
     const completions = [...dbCompletions, ...localCompletions, ...externCompletions, ...customSnippets];
 
     const word = getWordBeforeCursor();
+    
     if (!word || completions.length === 0) {
         hideProSense();
         return;

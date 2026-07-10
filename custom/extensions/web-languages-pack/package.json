@@ -1,0 +1,9 @@
+{
+  "id": "web-languages-pack",
+  "name": "Web Languages Syntax Pack",
+  "description": "Dynamic, decoupled syntax highlighting and autocompletes for HTML, CSS, and JavaScript/TypeScript.",
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "type": "extension",
+  "main": "index.js"
+}
