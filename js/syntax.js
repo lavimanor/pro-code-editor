@@ -237,6 +237,35 @@ function tokenizeHTMLWithSubLanguages(text) {
 }
 
 /**
+ * Helper to match if any active diagnostics cover the current character offset.
+ */
+function findDiagnosticAtIndex(globalIndex) {
+    const diags = window.activeDiagnostics || [];
+    // Sort by severity so that errors (severity 1) are given highest rendering priority over warnings
+    return diags
+        .filter(d => globalIndex >= d.start && globalIndex < d.end)
+        .sort((a, b) => a.severity - b.severity)[0];
+}
+
+/**
+ * Resolves the styling class according to user preferences or extension registrations.
+ */
+function getDiagnosticStyleClass(severity) {
+    const activeStyleId = localStorage.getItem('editor-diagnostic-style') || 'vscode';
+    
+    if (activeStyleId === 'vscode' || activeStyleId === 'intellij') {
+        return `style-${activeStyleId}`;
+    }
+
+    const customStyle = api.views.getDiagnosticStyle(activeStyleId);
+    if (customStyle) {
+        return severity === 1 ? customStyle.errorClass : customStyle.warningClass;
+    }
+
+    return 'style-vscode';
+}
+
+/**
  * Escapes tags structures and applies matching bracket styles.
  */
 function escapeAndMarkChar(char, globalIndex, highlightIndices, cursorIndex) {
@@ -250,11 +279,24 @@ function escapeAndMarkChar(char, globalIndex, highlightIndices, cursorIndex) {
         out += `<span id="prosense-caret-marker"></span>`;
     }
 
+    const activeDiag = findDiagnosticAtIndex(globalIndex);
+    let wrapperClass = '';
+    if (activeDiag) {
+        const severityClass = activeDiag.severity === 1 ? 'diag-error' : 'diag-warning';
+        const styleClass = getDiagnosticStyleClass(activeDiag.severity);
+        wrapperClass = `diagnostic ${severityClass} ${styleClass}`;
+    }
+
     if (highlightIndices && highlightIndices.has(globalIndex)) {
-        out += `<span class="bracket-highlight">${escaped}</span>`;
+        escaped = `<span class="bracket-highlight">${escaped}</span>`;
+    }
+
+    if (wrapperClass) {
+        out += `<span class="${wrapperClass}">${escaped}</span>`;
     } else {
         out += escaped;
     }
+
     return out;
 }
 
@@ -262,6 +304,8 @@ function escapeAndMarkChar(char, globalIndex, highlightIndices, cursorIndex) {
  * Entry render layer: Routes text streams to standard, sub-language split, or universal fallback tokenizers.
  */
 export function renderSyntaxHighlighting(text, fileName, highlightIndices, cursorIndex) {
+    // Strip all carriage returns globally to ensure 100% index-to-viewport alignment (Added Fix)
+    const cleanText = text.replace(/\r/g, '');
     const ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
     const config = api.languages.get(ext);
 
@@ -270,17 +314,17 @@ export function renderSyntaxHighlighting(text, fileName, highlightIndices, curso
 
     // Check if files require HTML nested block evaluations
     if (ext === 'html' || ext === 'htm') {
-        tokens = tokenizeHTMLWithSubLanguages(text);
+        tokens = tokenizeHTMLWithSubLanguages(cleanText);
     } else if (config) {
         const compiledModel = api.languages.getHighlighter(config.name) || api.languages.getHighlighter(ext);
         if (compiledModel) {
-            tokens = tokenize(text, compiledModel);
+            tokens = tokenize(cleanText, compiledModel);
         }
     }
 
     // If no specific language tokens are compiled, default to the universal generic tokenizer
     if (!tokens) {
-        tokens = tokenize(text, compiledGenericModel);
+        tokens = tokenize(cleanText, compiledGenericModel);
     }
 
     tokens.forEach(token => {
@@ -296,7 +340,7 @@ export function renderSyntaxHighlighting(text, fileName, highlightIndices, curso
         }
     });
 
-    if (cursorIndex === text.length) {
+    if (cursorIndex === cleanText.length) {
         backdropHTML += `<span id="prosense-caret-marker"></span>`;
     }
 

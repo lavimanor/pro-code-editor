@@ -140,9 +140,46 @@ export function activate(api) {
     });
     api.languages.registerHighlighter('javascript', jsRules);
 
-    console.log("[Web Pack] All syntax highlighters and autocomplete models loaded.");
+    // ==========================================
+    // 4. REGISTRATION OF BUILT-IN WEB LSP CLIENTS (Added Fix)
+    // ==========================================
+    const isWin = typeof window !== 'undefined' && window.process && window.process.platform === 'win32';
+    
+    // Explicitly target Windows .cmd batch wrappers on Windows to ensure shell resolution
+    const tsCmd = isWin ? 'typescript-language-server.cmd' : 'typescript-language-server';
+    const cssCmd = isWin ? 'vscode-css-language-server.cmd' : 'vscode-css-language-server';
+    const htmlCmd = isWin ? 'vscode-html-language-server.cmd' : 'vscode-html-language-server';
+
+    // Force-enable semantic diagnostics on all JS files under proper language scoping
+    const tsInitializationOptions = {
+        javascript: {
+            implicitProjectConfiguration: {
+                checkJs: true
+            }
+        },
+        typescript: {
+            implicitProjectConfiguration: {
+                checkJs: true
+            }
+        }
+    };
+
+    api.languages.registerLspClient('javascript', tsCmd, ['--stdio'], tsInitializationOptions);
+    api.languages.registerLspClient('css', cssCmd, ['--stdio']);
+    api.languages.registerLspClient('html', htmlCmd, ['--stdio']);
+
+    // ==========================================
+    // 5. REGISTRATION OF CUSTOM DIAGNOSTIC STYLES
+    // ==========================================
+    api.views.registerDiagnosticStyle('web-dashed', {
+        name: 'Web Dev Dashed Underline',
+        errorClass: 'diag-error-web',
+        warningClass: 'diag-warning-web'
+    });
+
+    console.log("[Web Pack] All syntax highlighters, autocomplete models, LSP clients, and custom styles loaded.");
 }
 
 export function deactivate() {
-    console.log("[Web Pack] Syntax highlighting registries flushed.");
+    console.log("[Web Pack] Syntax highlighting and LSP client registries flushed.");
 }

@@ -464,3 +464,184 @@ ipcMain.handle('focus-fix', () => {
     }
     return true;
 });
+
+// =====================================================================
+//  LSP (Language Server Protocol) Process Subsystem (Added Fix)
+// =====================================================================
+
+class LspProcess {
+    constructor(id, command, args, win, cwd) {
+        this.id = id;
+        this.win = win;
+        
+        const isWindows = process.platform === 'win32';
+        if (isWindows) {
+            // Pre-concatenate command and args into a single command string on Windows
+            // to bypass the Node.js DEP0190 array-arg shell injection warning.
+            const cmdString = [command, ...args].join(' ');
+            console.log(`[LSP Main Debug] Windows Spawn: "${cmdString}" in cwd: "${cwd}"`);
+            this.child = spawn(cmdString, { 
+                cwd,
+                shell: true
+            });
+        } else {
+            console.log(`[LSP Main Debug] Unix Spawn: "${command}" args: ${args} in cwd: "${cwd}"`);
+            this.child = spawn(command, args, { 
+                cwd,
+                shell: false
+            });
+        }
+        
+        if (this.child.pid) {
+            console.log(`[LSP Main Debug] Subprocess successfully spawned. PID: ${this.child.pid}`);
+        }
+        
+        this.buffer = Buffer.alloc(0);
+
+        this.child.stdout.on('data', (data) => {
+            this.buffer = Buffer.concat([this.buffer, data]);
+            this.parseBuffer();
+        });
+
+        this.child.stderr.on('data', (data) => {
+            console.error(`[LSP ${id} Error]`, data.toString());
+        });
+
+        this.child.on('error', (err) => {
+            console.error(`[LSP ${id} Spawn Error]`, err);
+        });
+
+        this.child.on('close', (code) => {
+            console.log(`[LSP ${id}] Subprocess exited with code ${code}`);
+        });
+    }
+
+    send(message) {
+        const json = JSON.stringify(message);
+        // Compose standard LSP Content-Length HTTP-style header payload
+        const payload = `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`;
+        if (this.child.stdin.writable) {
+            this.child.stdin.write(payload);
+        }
+    }
+
+    parseBuffer() {
+        while (true) {
+            // Find the boundary between headers and body: \r\n\r\n
+            const headerEnd = this.buffer.indexOf('\r\n\r\n');
+            if (headerEnd === -1) break;
+
+            // Extract the header segment as a string to parse Content-Length
+            const headerPart = this.buffer.toString('utf8', 0, headerEnd);
+            const lengthMatch = headerPart.match(/Content-Length:\s*(\d+)/i);
+            if (!lengthMatch) {
+                // Skip past corrupt headers
+                this.buffer = this.buffer.subarray(headerEnd + 4);
+                continue;
+            }
+
+            const contentLength = parseInt(lengthMatch[1], 10);
+            const bodyStart = headerEnd + 4;
+
+            // Check if we have the complete body (measured in actual raw bytes)
+            if (this.buffer.length < bodyStart + contentLength) {
+                break; // Await more incoming data chunks
+            }
+
+            // Slice out the JSON body block
+            const bodyBuffer = this.buffer.subarray(bodyStart, bodyStart + contentLength);
+            
+            // Advance the main buffer past the parsed message
+            this.buffer = this.buffer.subarray(bodyStart + contentLength);
+
+            try {
+                const bodyStr = bodyBuffer.toString('utf8');
+                const msg = JSON.parse(bodyStr);
+                
+                // Trace every parsed message method and ID
+                console.log(`[LSP Main Debug] Parsed Message from "${this.id}" | Method: "${msg.method || 'Response'}" | ID: ${msg.id !== undefined ? msg.id : 'N/A'}`);
+                
+                if (this.win && !this.win.isDestroyed()) {
+                    this.win.webContents.send('lsp-message', { lspId: this.id, message: msg });
+                }
+            } catch (err) {
+                console.error('Failed to parse LSP JSON-RPC message body:', err);
+            }
+        }
+    }
+
+    kill() {
+        try { this.child.kill(); } catch (e) {}
+    }
+}
+
+const activeLspServers = new Map();
+
+ipcMain.handle('lsp-start', (event, lspId, command, args, cwd, initializationOptions) => {
+    console.log(`[LSP Main Debug] lsp-start IPC handler received lspId: "${lspId}" | cmd: "${command}"`);
+    const win = BrowserWindow.fromWebContents(event.sender);
+    
+    // Auto-resolve global tsserver.js path dynamically on Windows using npm root query (Added Fix)
+    let finalOptions = initializationOptions || {};
+    if (process.platform === 'win32' && command.startsWith('typescript-language-server')) {
+        try {
+            const { execSync } = require('child_process');
+            // Query npm dynamically to find the exact global installation path on this machine
+            const globalNpmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+            const resolvedPath = path.join(globalNpmRoot, 'typescript/lib/tsserver.js');
+            
+            if (fs.existsSync(resolvedPath)) {
+                finalOptions = {
+                    ...finalOptions,
+                    tsserver: {
+                        path: resolvedPath
+                    }
+                };
+                console.log(`[LSP Main Debug] Dynamically resolved global tsserver.js path: "${resolvedPath}"`);
+            } else {
+                console.warn(`[LSP Main Debug Warning] Resolved tsserver.js path does not exist: "${resolvedPath}"`);
+            }
+        } catch (err) {
+            console.error('[LSP Main Debug Error] Failed to query global npm root for tsserver path:', err.message);
+        }
+    }
+
+    if (activeLspServers.has(lspId)) {
+        console.log(`[LSP Main Debug] Terminating old active instance of "${lspId}"...`);
+        activeLspServers.get(lspId).kill();
+    }
+
+    try {
+        const server = new LspProcess(lspId, command, args, win, cwd);
+        activeLspServers.set(lspId, server);
+        return { success: true, initializationOptions: finalOptions }; // Return the dynamically resolved options (Added Fix)
+    } catch (err) {
+        console.error(`[LSP Main Debug] Failed to instantiate LspProcess:`, err);
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('lsp-send', (event, lspId, message) => {
+    const server = activeLspServers.get(lspId);
+    if (server) {
+        server.send(message);
+        return true;
+    }
+    return false;
+});
+
+ipcMain.handle('lsp-stop', (event, lspId) => {
+    const server = activeLspServers.get(lspId);
+    if (server) {
+        server.kill();
+        activeLspServers.delete(lspId);
+        return true;
+    }
+    return false;
+});
+
+// Kill all active language servers when Electron app is about to close
+app.on('will-quit', () => {
+    activeLspServers.forEach(server => server.kill());
+    activeLspServers.clear();
+});

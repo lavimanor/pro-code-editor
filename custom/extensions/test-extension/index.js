@@ -128,4 +128,13 @@ export function activate(api) {
         { type: 'function', regex: /\b[a-zA-Z_]\w*(?=\s*\()/ },
         { type: 'number', regex: /\b\d+(?:\.\d+)?\b/ }
     ]);
+
+    api.languages.registerLspClient('py', 'pyright-langserver', ['--stdio']);
+
+    // 8. Register custom diagnostic highlighting style (New Addition)
+    api.views.registerDiagnosticStyle('neon-sparkle', {
+        name: 'Neon Sparkle Underline',
+        errorClass: 'diag-error-neon',
+        warningClass: 'diag-warning-neon'
+    });
 }

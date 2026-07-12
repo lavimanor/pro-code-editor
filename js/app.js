@@ -464,6 +464,47 @@ window.renderDynamicSettings = () => {
 };
 
 /**
+ * Generates options dynamically inside the Settings dialog based on custom registrations (Added Fix)
+ */
+window.renderDiagnosticStyleSelector = () => {
+    const selector = document.getElementById('diagnostic-style-selector');
+    if (!selector) return;
+
+    selector.innerHTML = '';
+    
+    // Built-in styles
+    const vscodeOpt = document.createElement('option');
+    vscodeOpt.value = 'vscode';
+    vscodeOpt.textContent = 'VS Code Style (Wavy)';
+    selector.appendChild(vscodeOpt);
+
+    const intellijOpt = document.createElement('option');
+    intellijOpt.value = 'intellij';
+    intellijOpt.textContent = 'IntelliJ Style (Solid/Dotted)';
+    selector.appendChild(intellijOpt);
+
+    // Dynamic style selections added via plugins
+    api.views.diagnosticStyles.forEach((config, id) => {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = config.name || id;
+        selector.appendChild(opt);
+    });
+
+    const savedStyle = localStorage.getItem('editor-diagnostic-style') || 'vscode';
+    selector.value = savedStyle;
+};
+
+// Bind selection events inside the Settings panel
+const diagnosticStyleSelector = document.getElementById('diagnostic-style-selector');
+if (diagnosticStyleSelector) {
+    diagnosticStyleSelector.addEventListener('change', (e) => {
+        localStorage.setItem('editor-diagnostic-style', e.target.value);
+        runLayoutRenderEngine(); // Repaint immediately on selection
+    });
+}
+
+/**
  * Dynamically renders custom activity icons inside the Activity Bar.
  */
 window.renderDynamicSidebarPanels = () => {
@@ -631,6 +672,36 @@ window.addEventListener('beforeunload', (e) => {
     }
 });
 
+/**
+ * Converts 0-based LSP line/character coordinates into absolute file offset index positions
+ */
+function lspPositionToOffset(text, line, character) {
+    // Strip all carriage returns globally to prevent index-to-viewport drift on Windows (Added Fix)
+    const cleanText = text.replace(/\r/g, '');
+    const lines = cleanText.split('\n');
+    let offset = 0;
+    for (let i = 0; i < line && i < lines.length; i++) {
+        offset += lines[i].length + 1; // +1 for newline character
+    }
+    return offset + character;
+}
+
+// Global storage caches for active workspace diagnostics (Added Fix)
+window.activeDiagnosticsCache = new Map();
+window.activeDiagnostics = [];
+
+/**
+ * Converts a standard file:// URI into a clean OS-native file path (Added Fix)
+ */
+function uriToPath(uri) {
+    let clean = uri.replace(/^file:\/\/\//, '');
+    const isWin = typeof window !== 'undefined' && window.process && window.process.platform === 'win32';
+    if (isWin) {
+        clean = clean.replace(/\//g, '\\');
+    }
+    return decodeURIComponent(clean);
+}
+
 // Setup Settings Snippet Manager inputs and list update bindings
 const snippetTrigger = document.getElementById('snippet-trigger');
 const snippetLang = document.getElementById('snippet-lang');
@@ -699,6 +770,20 @@ editor.addEventListener('input', () => {
         tabContentsCache.set(fileKey(activeFileHandle), editor.value);
     }
     runLayoutRenderEngine();
+
+    // Sync current document state changes back to active LSP servers
+    if (activeFileHandle) {
+        const fileExt = activeFileHandle.name.split('.').pop().toLowerCase();
+        const lspEntry = api.languages.getLspClient(fileExt);
+        if (lspEntry && lspEntry.client) {
+            const cachedVersions = (window.lspVersionCache = window.lspVersionCache || {});
+            const currentVersion = cachedVersions[fileKey(activeFileHandle)] = (cachedVersions[fileKey(activeFileHandle)] || 1) + 1;
+            
+            // Ensure no \r characters are sent to the LSP during edits (Added Fix)
+            const cleanText = editor.value.replace(/\r/g, '');
+            lspEntry.client.didChange(activeFileHandle.path, currentVersion, cleanText);
+        }
+    }
 
     // Trigger autocomplete suggestions strictly during input events
     const activeName = activeFileHandle ? activeFileHandle.name : '';
@@ -1019,7 +1104,8 @@ async function handleOpenFile(fileHandle) {
         if (tabContentsCache.has(fileKey(actualHandle))) {
             contents = tabContentsCache.get(fileKey(actualHandle));
         } else {
-            contents = await readFileContents(activeFileHandle);
+            // Normalize CRLF (\r\n) line endings to LF (\n) on load to prevent character drift (Added Fix)
+            contents = (await readFileContents(activeFileHandle)).replace(/\r\n/g, '\n');
             tabContentsCache.set(fileKey(actualHandle), contents);
         }
 
@@ -1028,11 +1114,106 @@ async function handleOpenFile(fileHandle) {
         btnSaveFile.disabled = false;
         filePathDisplay.textContent = "Workspace / " + activeFileHandle.name;
         
+        // Restore cached diagnostics for this file if they exist (Added Fix)
+        const activePath = activeFileHandle.path ? activeFileHandle.path.toLowerCase() : '';
+        window.activeDiagnostics = window.activeDiagnosticsCache.get(activePath) || [];
+
         updateGoLiveVisibility(activeFileHandle.name);
         updateRunButtonVisibility(activeFileHandle.name);
         updateTabsUI();
         runLayoutRenderEngine();
         await refreshExplorer();
+
+        // Check if an LSP client is registered for this file extension
+        const fileExt = activeFileHandle.name.split('.').pop().toLowerCase();
+        const langConfig = api.languages.get(fileExt);
+        const lspKey = langConfig ? langConfig.name.toLowerCase() : fileExt;
+        const lspEntry = api.languages.getLspClient(lspKey) || api.languages.getLspClient(fileExt);
+
+        console.log(`[LSP Debug] File: ${activeFileHandle.name} | Extension: ${fileExt} | Lookup Key: ${lspKey} | Found Client:`, !!lspEntry);
+
+        if (lspEntry && rootDirectoryHandle) {
+            const client = lspEntry.client;
+            console.log(`[LSP Debug] Triggering client.start() for "${lspEntry.command}"...`);
+            
+            // Start the Language Server process if not already active
+            client.start(lspEntry.command, lspEntry.args, rootDirectoryHandle.path, lspEntry.initializationOptions).then((started) => {
+                console.log(`[LSP Debug] client.start() resolved with status:`, started);
+                if (started) {
+                    // Resolve official LSP Language ID mappings
+                    const lspLangId = (fileExt === 'js' || fileExt === 'mjs' || fileExt === 'cjs') ? 'javascript' :
+                                      (fileExt === 'py') ? 'python' :
+                                      (fileExt === 'ts') ? 'typescript' :
+                                      fileExt;
+
+                    // Ensure no \r characters are sent to the LSP on open (Added Fix)
+                    const cleanContents = contents.replace(/\r/g, '');
+                    client.didOpen(activeFileHandle.path, lspLangId, cleanContents);
+                    
+                    // Register the diagnostics listener exactly once per client instance
+                    if (!client.diagnosticsRegistered) {
+                        client.diagnosticsRegistered = true;
+                        client.onNotification('textDocument/publishDiagnostics', (params) => {
+                            const count = params.diagnostics.length;
+                            const cleanPath = uriToPath(params.uri).toLowerCase();
+
+                            // Retrieve the actual current text of this file from the cache (Added Fix)
+                            let fileText = null;
+                            for (const [key, text] of tabContentsCache.entries()) {
+                                if (key.toLowerCase() === cleanPath) {
+                                    fileText = text;
+                                    break;
+                                }
+                            }
+                            // Fall back to editor.value if the cache does not contain this file
+                            if (!fileText) {
+                                fileText = editor.value;
+                            }
+                            
+                            // Map incoming diagnostics ranges to absolute string offsets
+                            const mappedDiags = params.diagnostics.map(diag => {
+                                let startOffset = lspPositionToOffset(fileText, diag.range.start.line, diag.range.start.character);
+                                let endOffset = lspPositionToOffset(fileText, diag.range.end.line, diag.range.end.character);
+                                
+                                // Fix zero-width or trailing out-of-bound diagnostic ranges
+                                if (startOffset === endOffset) {
+                                    if (startOffset > 0) {
+                                        startOffset = startOffset - 1; // Highlight the preceding token character
+                                    } else {
+                                        endOffset = startOffset + 1;
+                                    }
+                                }
+
+                                // Clamp offsets so they are always safe and fit within current text boundaries
+                                startOffset = Math.max(0, Math.min(fileText.length - 1, startOffset));
+                                endOffset = Math.max(1, Math.min(fileText.length, endOffset));
+
+                                return {
+                                    start: startOffset,
+                                    end: endOffset,
+                                    severity: diag.severity,
+                                    message: diag.message
+                                };
+                            });
+                            
+                            // Cache the mapped diagnostics using the standardized file path
+                            window.activeDiagnosticsCache.set(cleanPath, mappedDiags);
+
+                            // Only update active rendering array and repaint if it belongs to the currently active file (Added Fix)
+                            const currentActivePath = activeFileHandle && activeFileHandle.path ? activeFileHandle.path.toLowerCase() : '';
+                            if (cleanPath === currentActivePath) {
+                                window.activeDiagnostics = mappedDiags;
+                                runLayoutRenderEngine();
+                            }
+
+                            if (count > 0) {
+                                printToTerminal(`[LSP Diagnostics] "${activeFileHandle.name}" has ${count} warning/error nodes reported by language server.`, 'system');
+                            }
+                        });
+                    }
+                }
+            });
+        }
     } catch (err) {
         alert('Could not open target resource path stream.');
     }
@@ -1472,6 +1653,7 @@ async function bootEditor() {
     // Dynamically render UI options based on loaded registries
     renderThemeSelector(themeSelector);
     renderIconSelector(iconSelector);
+    window.renderDiagnosticStyleSelector(); // Added Fix
     if (typeof window.renderDynamicSidebarPanels === 'function') window.renderDynamicSidebarPanels();
     if (typeof window.renderDynamicSettings === 'function') window.renderDynamicSettings();
 
@@ -1485,6 +1667,7 @@ async function bootEditor() {
 
     // Set up interactive window splitting layout controls (New Addition)
     initLayoutResizing();
+    
 }
 
 /**

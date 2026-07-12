@@ -1,3 +1,5 @@
+import { LspClient } from './lsp-client.js';
+
 class ThemesAPI {
     constructor() {
         this.registry = new Map();
@@ -53,6 +55,7 @@ class LanguagesAPI {
         this.languages = new Map();     // Map: fileExtension -> langConfig
         this.parserRules = new Map();   // Map: parserId -> array of rules
         this.highlighters = new Map();  // Map: langId -> compiled syntax regex model
+        this.lspClients = new Map();    // Map: fileExtension -> active LSP client configuration (Added Fix)
     }
 
     register(langId, config) {
@@ -69,6 +72,18 @@ class LanguagesAPI {
                 });
             });
         }
+    }
+
+    registerLspClient(ext, command, args, initializationOptions = null) {
+        if (typeof window !== 'undefined' && window.process) {
+            const cleanExt = ext.replace('.', '').toLowerCase();
+            const client = new LspClient(cleanExt, cleanExt);
+            this.lspClients.set(cleanExt, { client, command, args, initializationOptions }); // Track options
+        }
+    }
+
+    getLspClient(ext) {
+        return this.lspClients.get(ext.toLowerCase());
     }
 
     /**
@@ -107,6 +122,12 @@ class LanguagesAPI {
         this.languages.clear();
         this.parserRules.clear();
         this.highlighters.clear(); // Wipes syntax caches to prevent leaks during hot-reloads
+        
+        // Terminate any background servers safely before flushing (Added Fix)
+        this.lspClients.forEach(entry => {
+            try { entry.client.stop(); } catch (err) { console.error(err); }
+        });
+        this.lspClients.clear();
     }
 }
 
@@ -141,6 +162,7 @@ class ViewsAPI {
     constructor() {
         this.sidebarPanels = new Map();
         this.customSettings = new Map();
+        this.diagnosticStyles = new Map(); // Map: id -> custom css class definitions (Added Fix)
     }
 
     registerSidebarPanel(id, config) {
@@ -157,9 +179,21 @@ class ViewsAPI {
         }
     }
 
+    registerDiagnosticStyle(id, config) {
+        this.diagnosticStyles.set(id, config);
+        if (typeof window.renderDiagnosticStyleSelector === 'function') {
+            window.renderDiagnosticStyleSelector();
+        }
+    }
+
+    getDiagnosticStyle(id) {
+        return this.diagnosticStyles.get(id);
+    }
+
     clear() {
         this.sidebarPanels.clear();
         this.customSettings.clear();
+        this.diagnosticStyles.clear();
     }
 }
 

@@ -958,3 +958,59 @@ body.layout-resizing .resizer-h.dragging {
 .syntax-number { color: var(--syntax-number); }
 .syntax-punctuation { color: var(--syntax-punctuation); }
 .syntax-bracket { color: var(--syntax-bracket, #ffd700); font-weight: 500; }
+
+/* Core LSP Diagnostic Highlighting Styles (Added Fix) */
+.diagnostic.diag-error.style-vscode {
+    text-decoration: underline wavy #ef5350 1px;
+    text-decoration-skip-ink: none;
+}
+.diagnostic.diag-warning.style-vscode {
+    text-decoration: underline wavy #ffcc00 1px;
+    text-decoration-skip-ink: none;
+}
+.diagnostic.diag-error.style-intellij {
+    border-bottom: 2px solid #ef5350;
+    background-color: rgba(218, 39, 36, 0.322);
+}
+.diagnostic.diag-warning.style-intellij {
+    border-bottom: 2px dotted #ffcc00;
+    background-color: rgba(255, 204, 0, 0.15);
+}
+
+/* Custom Extension Contributed Styles (Added Fix) */
+.diagnostic.diag-error-neon {
+    border-bottom: 2px dashed #00b4d8;
+    background-color: rgba(0, 180, 216, 0.08);
+}
+.diagnostic.diag-warning-neon {
+    border-bottom: 2px dashed #90e0ef;
+    background-color: rgba(144, 224, 239, 0.05);
+}
+
+/* Web Development Dashed Highlighting Styles (Added Fix) */
+.diagnostic.diag-error-web {
+    border-bottom: 2px dashed #00b4d8;
+    background-color: rgba(0, 180, 216, 0.08);
+}
+.diagnostic.diag-warning-web {
+    border-bottom: 2px dashed #90e0ef;
+    background-color: rgba(144, 224, 239, 0.05);
+}
+
+/* LSP Hover popup layout (Added Fix) */
+#lsp-hover-popup {
+    position: absolute;
+    z-index: 1010;
+    background-color: var(--bg-sidebar);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 8px 12px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    max-width: 320px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-main);
+    font-family: var(--font-ui);
+    pointer-events: none;
+    display: none;
+}
