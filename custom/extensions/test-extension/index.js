@@ -57,7 +57,7 @@ export function activate(api) {
                 case 'html': return '⚛';
                 case 'css': return '✦';
                 case 'neon': return '✹';
-                default: return '⌺';
+                // default: return '⌺';
             }
         }
     });

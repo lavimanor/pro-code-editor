@@ -28,7 +28,7 @@ const DEFAULT_THEMES = {
             '--syntax-builtin': '#4ec9b0',
             '--syntax-number': '#b5cea8',
             '--syntax-punctuation': '#d4d4d4',
-            '--syntax-bracket': '#ffd700', // Bracket Pair Colorizer (Gold) (Added Fix)
+            '--syntax-bracket': '#d4d4d4', // Restored to VS Code standard text/punctuation gray
             '--syntax-md-header': '#569cd6',
             '--syntax-md-list': '#9cdcfe',
             '--syntax-md-blockquote': '#6a9955',
@@ -67,7 +67,7 @@ const DEFAULT_THEMES = {
             '--syntax-builtin': '#0033b3',
             '--syntax-number': '#1750eb',
             '--syntax-punctuation': '#1c1c1c',
-            '--syntax-bracket': '#a67f00', // Dark Gold (Added Fix)
+            '--syntax-bracket': '#1c1c1c', // Restored to IntelliJ Light dark gray
             '--syntax-md-header': '#0033b3',
             '--syntax-md-list': '#1750eb',
             '--syntax-md-blockquote': '#8c8c8c',
@@ -106,7 +106,7 @@ const DEFAULT_THEMES = {
             '--syntax-builtin': '#c77dbb',
             '--syntax-number': '#2aacb8',
             '--syntax-punctuation': '#ced0d6',
-            '--syntax-bracket': '#ffd700', // Dracula Gold (Added Fix)
+            '--syntax-bracket': '#ced0d6', // Restored to Darcula neutral light gray
             '--syntax-md-header': '#cf8e6d',
             '--syntax-md-list': '#e8bf6a',
             '--syntax-md-blockquote': '#7a7e85',
@@ -145,7 +145,7 @@ const DEFAULT_THEMES = {
             '--syntax-builtin': '#a6e22e',
             '--syntax-number': '#ae81ff',
             '--syntax-punctuation': '#f8f8f2',
-            '--syntax-bracket': '#ffd700', // Monokai Gold (Added Fix)
+            '--syntax-bracket': '#f8f8f2', // Restored to classic Monokai off-white
             '--syntax-md-header': '#f92672',
             '--syntax-md-list': '#a6e22e',
             '--syntax-md-blockquote': '#75715e',
@@ -184,7 +184,7 @@ const DEFAULT_THEMES = {
             '--syntax-builtin': '#e36209',
             '--syntax-number': '#005cc5',
             '--syntax-punctuation': '#24292f',
-            '--syntax-bracket': '#0969da', // GitHub Blue Brackets (Added Fix)
+            '--syntax-bracket': '#24292f', // Restored to GitHub dark gray/black
             '--syntax-md-header': '#005cc5',
             '--syntax-md-list': '#24292f',
             '--syntax-md-blockquote': '#6a737d',
@@ -223,7 +223,7 @@ const DEFAULT_THEMES = {
             '--syntax-builtin': '#b58900',
             '--syntax-number': '#859900',
             '--syntax-punctuation': '#93a1a1',
-            '--syntax-bracket': '#b58900', // Solarized Yellow (Added Fix)
+            '--syntax-bracket': '#93a1a1', // Restored to Solarized base1 (medium teal/gray)
             '--syntax-md-header': '#268bd2',
             '--syntax-md-list': '#b58900',
             '--syntax-md-blockquote': '#586e75',
@@ -262,7 +262,7 @@ const DEFAULT_THEMES = {
             '--syntax-builtin': '#0000ff',
             '--syntax-number': '#09885a',
             '--syntax-punctuation': '#000000',
-            '--syntax-bracket': '#0074cc', // Roblox Blue (Added Fix)
+            '--syntax-bracket': '#000000', // Restored to clean neutral black
             '--syntax-md-header': '#0000ff',
             '--syntax-md-list': '#008080',
             '--syntax-md-blockquote': '#008000',
@@ -301,7 +301,7 @@ const DEFAULT_THEMES = {
             '--syntax-builtin': '#84d6f7',
             '--syntax-number': '#ffc600',
             '--syntax-punctuation': '#cccccc',
-            '--syntax-bracket': '#ffc600', // Roblox Gold (Added Fix)
+            '--syntax-bracket': '#cccccc', // Restored to default light gray punctuation
             '--syntax-md-header': '#f86d7c',
             '--syntax-md-list': '#84d6f7',
             '--syntax-md-blockquote': '#667289',
