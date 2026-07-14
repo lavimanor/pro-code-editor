@@ -388,7 +388,7 @@ button:disabled {
     overflow: hidden;
 }
 
-#editor, #editor-backdrop {
+#editor, #editor-backdrop, #editor-search-layer {
     position: absolute;
     top: 0;
     left: 0;
@@ -428,6 +428,127 @@ button:disabled {
     overflow: hidden;
 }
 
+/* Search highlight layer: sits beneath the backdrop so mark backgrounds show
+   through behind the syntax-coloured text. Text itself is fully transparent. */
+#editor-search-layer {
+    color: transparent !important;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+#editor-search-layer .search-hit {
+    color: transparent;
+    background-color: rgba(234, 179, 8, 0.32);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px rgba(234, 179, 8, 0.5);
+}
+
+#editor-search-layer .search-hit.current {
+    background-color: rgba(249, 115, 22, 0.55);
+    box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.9);
+}
+
+/* ---- Find & Replace widget ---------------------------------------------- */
+#find-widget {
+    position: absolute;
+    top: 8px;
+    right: 22px;
+    z-index: 60;
+    display: flex;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 4px;
+    background-color: var(--bg-sidebar);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    font-family: var(--font-ui);
+}
+
+#find-widget.find-hidden { display: none; }
+
+#find-widget .find-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+#find-widget .find-row {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+#find-widget.find-collapsed-replace .find-replace-row { display: none; }
+
+#find-widget .find-field {
+    position: relative;
+    display: flex;
+    align-items: center;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding-right: 6px;
+}
+
+#find-widget.find-error .find-row:first-child .find-field {
+    border-color: #e35b5b;
+}
+
+#find-widget input {
+    width: 200px;
+    padding: 5px 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-main);
+    font-family: var(--font-code);
+    font-size: 12px;
+    outline: none;
+}
+
+#find-widget .find-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    padding-left: 4px;
+    min-width: 54px;
+    text-align: right;
+}
+
+#find-widget button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 5px;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: var(--font-code);
+    transition: background-color 0.12s, color 0.12s;
+}
+
+#find-widget button:hover {
+    background-color: var(--bg-button);
+    color: var(--text-main);
+}
+
+#find-widget .find-opt.active {
+    background-color: rgba(0, 122, 204, 0.35);
+    color: #fff;
+    border-color: var(--accent-color);
+}
+
+#find-toggle-replace {
+    align-self: stretch;
+    height: auto !important;
+}
+
 #prosense-widget {
     position: absolute;
     z-index: 1000;
@@ -436,7 +557,7 @@ button:disabled {
     border-radius: 5px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
     max-height: 180px;
-    width: 220px;
+    width: 280px;
     overflow-y: auto;
     font-family: var(--font-ui);
     scrollbar-width: thin;
@@ -481,6 +602,40 @@ button:disabled {
 .prosense-label {
     font-family: var(--font-code);
     font-weight: 500;
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.prosense-detail {
+    flex: 0 1 auto;
+    margin-left: auto;
+    padding-left: 8px;
+    font-family: var(--font-code);
+    font-size: 10px;
+    color: var(--text-muted);
+    opacity: 0.85;
+    max-width: 55%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.prosense-item.active .prosense-detail {
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.prosense-match {
+    color: var(--accent-color);
+    font-weight: 700;
+}
+
+.prosense-item.active .prosense-match {
+    color: #ffffff;
+    text-decoration: underline;
+    text-underline-offset: 2px;
 }
 
 #prosense-caret-marker {
@@ -955,6 +1110,8 @@ body.layout-resizing .resizer-h.dragging {
 .syntax-string { color: var(--syntax-string); }
 .syntax-function { color: var(--syntax-function); }
 .syntax-builtin { color: var(--syntax-builtin); }
+/* Class / type names (falls back to the builtin/type color when a theme omits it) */
+.syntax-class-name { color: var(--syntax-class-name, var(--syntax-builtin)); }
 .syntax-number { color: var(--syntax-number); }
 .syntax-punctuation { color: var(--syntax-punctuation); }
 .syntax-bracket { color: var(--syntax-bracket, #ffd700); font-weight: 500; }
@@ -999,18 +1156,78 @@ body.layout-resizing .resizer-h.dragging {
 
 /* LSP Hover popup layout (Added Fix) */
 #lsp-hover-popup {
-    position: absolute;
-    z-index: 1010;
+    position: fixed; /* Positioned with viewport coords, so pin to the viewport (Added Fix) */
+    z-index: 2010; /* Elevated above all standard UI layers */
     background-color: var(--bg-sidebar);
     border: 1px solid var(--border-color);
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 8px 12px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-    max-width: 320px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    max-width: 360px;
     font-size: 11px;
     line-height: 1.5;
     color: var(--text-main);
     font-family: var(--font-ui);
-    pointer-events: none;
+    pointer-events: auto; /* Allow text selection and clicks inside (Added Fix) */
     display: none;
+    user-select: text; /* Explicitly allow text selection (Added Fix) */
+    -webkit-user-select: text;
+    max-height: 40vh;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+    animation: hover-popup-in 0.09s ease-out;
+}
+@keyframes hover-popup-in {
+    from { opacity: 0; transform: translateY(-3px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.hover-loading {
+    color: var(--text-muted);
+    font-style: italic;
+}
+.hover-heading {
+    display: block;
+    color: var(--text-main);
+    font-weight: 600;
+    margin: 2px 0;
+}
+
+/* Hover popup markdown rendering (Added Fix) */
+.hover-code {
+    font-family: var(--font-code);
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--text-main);
+    background-color: var(--bg-darker);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin: 0 0 6px 0;
+    white-space: pre-wrap;
+    overflow-x: auto;
+}
+.hover-doc-text {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    margin-bottom: 4px;
+}
+.hover-doc-text:last-child { margin-bottom: 0; }
+.hover-inline-code {
+    font-family: var(--font-code);
+    font-size: 10.5px;
+    background-color: var(--bg-darker);
+    border-radius: 3px;
+    padding: 1px 4px;
+    color: var(--syntax-string, var(--text-main));
+}
+.hover-doc-text strong { color: var(--text-main); font-weight: 600; }
+.hover-rule {
+    border: none;
+    border-top: 1px solid var(--border-color);
+    margin: 6px 0;
 }

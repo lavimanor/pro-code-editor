@@ -113,23 +113,23 @@ export function activate(api) {
             { label: 'class', insertText: 'class Name {\n    constructor() {\n        \n    }\n}', type: 'snippet' },
             
             // DOM Access APIs
-            { label: 'console.log', insertText: 'console.log();', type: 'function' },
-            { label: 'document.getElementById', insertText: 'document.getElementById("");', type: 'function' },
-            { label: 'document.querySelector', insertText: 'document.querySelector("");', type: 'function' },
-            { label: 'document.querySelectorAll', insertText: 'document.querySelectorAll("");', type: 'function' },
-            { label: 'addEventListener', insertText: 'addEventListener("click", (e) => {\n    \n});', type: 'snippet' },
-            
+            { label: 'console.log', insertText: 'console.log($0);', type: 'function', detail: '(…data) → void' },
+            { label: 'document.getElementById', insertText: 'document.getElementById("$0");', type: 'function', detail: '(id) → Element' },
+            { label: 'document.querySelector', insertText: 'document.querySelector("$0");', type: 'function', detail: '(selector) → Element' },
+            { label: 'document.querySelectorAll', insertText: 'document.querySelectorAll("$0");', type: 'function', detail: '(selector) → NodeList' },
+            { label: 'addEventListener', insertText: 'addEventListener("$0", (e) => {\n    \n});', type: 'snippet', detail: 'event listener' },
+
             // Array Traversal & Data API
-            { label: 'forEach', insertText: 'forEach(item => {\n    \n});', type: 'snippet' },
-            { label: 'map', insertText: 'map(item => {\n    return \n});', type: 'snippet' },
-            { label: 'filter', insertText: 'filter(item => {\n    return \n});', type: 'snippet' },
-            { label: 'fetch', insertText: 'fetch("")\n    .then(res => res.json())\n    .then(data => {\n        \n    })\n    .catch(err => console.error(err));', type: 'snippet' },
-            
+            { label: 'forEach', insertText: 'forEach(($0) => {\n    \n});', type: 'snippet', detail: '(item, i) → void' },
+            { label: 'map', insertText: 'map(($0) => {\n    return \n});', type: 'snippet', detail: '(item) → mapped' },
+            { label: 'filter', insertText: 'filter(($0) => {\n    return \n});', type: 'snippet', detail: '(item) → boolean' },
+            { label: 'fetch', insertText: 'fetch("$0")\n    .then(res => res.json())\n    .then(data => {\n        \n    })\n    .catch(err => console.error(err));', type: 'snippet', detail: 'async request' },
+
             // Timers & JSON
-            { label: 'setTimeout', insertText: 'setTimeout(() => {\n    \n}, 1000);', type: 'snippet' },
-            { label: 'promise', insertText: 'new Promise((resolve, reject) => {\n    \n});', type: 'snippet' },
-            { label: 'JSON.stringify', insertText: 'JSON.stringify();', type: 'function' },
-            { label: 'JSON.parse', insertText: 'JSON.parse();', type: 'function' }
+            { label: 'setTimeout', insertText: 'setTimeout(() => {\n    $0\n}, 1000);', type: 'snippet', detail: '(fn, ms) → id' },
+            { label: 'promise', insertText: 'new Promise((resolve, reject) => {\n    $0\n});', type: 'snippet', detail: 'new Promise' },
+            { label: 'JSON.stringify', insertText: 'JSON.stringify($0);', type: 'function', detail: '(value) → string' },
+            { label: 'JSON.parse', insertText: 'JSON.parse($0);', type: 'function', detail: '(text) → any' }
         ],
         parser: 'js',
         parserRules: [

@@ -24,6 +24,31 @@ const DEFAULT_TYPE_META = { icon: 'fa-bolt', color: '#ffeb3b' };
 
 const SOURCE_BOOST = { local: 220, custom: 150, db: 0, extern: -90 };
 
+function escHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Wraps the subsequence of `label` characters that fuzzy-match `query`
+ * in highlight spans so the user can see why an entry ranked (Added Fix).
+ */
+function highlightLabel(label, query) {
+    if (!query) return escHtml(label);
+    const q = query.toLowerCase();
+    const l = label.toLowerCase();
+    let qi = 0;
+    let out = '';
+    for (let i = 0; i < label.length; i++) {
+        if (qi < q.length && l[i] === q[qi]) {
+            out += `<span class="prosense-match">${escHtml(label[i])}</span>`;
+            qi++;
+        } else {
+            out += escHtml(label[i]);
+        }
+    }
+    return out;
+}
+
 function getUsageMap() {
     try {
         return JSON.parse(localStorage.getItem('prosense-usage') || '{}');
@@ -70,15 +95,28 @@ function insertSelection(item) {
     const end = cursor;
     const text = editorEl.value;
 
-    editorEl.value = text.substring(0, start) + item.insertText + text.substring(end);
+    // Explicit cursor placeholder: an insertText may contain a single `$0`
+    // marker to say exactly where the caret should land after insertion.
+    let insertText = item.insertText;
+    let caretOffset = -1;
+    const placeholderIdx = insertText.indexOf('$0');
+    if (placeholderIdx !== -1) {
+        caretOffset = placeholderIdx;
+        insertText = insertText.slice(0, placeholderIdx) + insertText.slice(placeholderIdx + 2);
+    }
 
-    let newCursorPos = start + item.insertText.length;
-    if (item.insertText.endsWith('()')) {
-        newCursorPos -= 1; 
-    } else if (item.insertText.endsWith('{}')) {
-        newCursorPos -= 1;
-    } else if (item.insertText.endsWith('[]')) {
-        newCursorPos -= 1;
+    editorEl.value = text.substring(0, start) + insertText + text.substring(end);
+
+    let newCursorPos;
+    if (caretOffset !== -1) {
+        newCursorPos = start + caretOffset;
+    } else {
+        newCursorPos = start + insertText.length;
+        // Heuristic: drop the caret inside a trailing empty pair so the user
+        // can keep typing arguments/contents right away.
+        if (/(\(\)|\{\}|\[\]|""|'')$/.test(insertText)) {
+            newCursorPos -= 1;
+        }
     }
     editorEl.selectionStart = editorEl.selectionEnd = newCursorPos;
 
@@ -127,6 +165,7 @@ function renderWidget() {
     }
     prosenseEl.innerHTML = '';
     const ul = document.createElement('ul');
+    const word = getWordBeforeCursor();
 
     filteredList.forEach((item, idx) => {
         const li = document.createElement('li');
@@ -135,8 +174,14 @@ function renderWidget() {
         const meta = TYPE_META[item.type] || DEFAULT_TYPE_META;
         const typeIcon = `<i class="fa-solid ${meta.icon}" style="color: ${meta.color}; font-size: 11px;"></i>`;
 
-        li.innerHTML = `<span class="prosense-type-icon">${typeIcon}</span> <span class="prosense-label">${item.label}</span>`;
-        
+        // Prefer an explicit `detail` (e.g. a signature hint) over the raw type name.
+        const detailText = item.detail || item.type || '';
+
+        li.innerHTML =
+            `<span class="prosense-type-icon">${typeIcon}</span>` +
+            `<span class="prosense-label">${highlightLabel(item.label, word)}</span>` +
+            `<span class="prosense-detail">${escHtml(detailText)}</span>`;
+
         li.addEventListener('click', () => {
             insertSelection(item);
         });
@@ -146,6 +191,18 @@ function renderWidget() {
     prosenseEl.appendChild(ul);
     prosenseEl.classList.remove('prosense-hidden');
     isOpen = true;
+
+    // Keep the active row within the scroll viewport during keyboard navigation (Added Fix)
+    const activeLi = ul.children[activeIndex];
+    if (activeLi) {
+        const liTop = activeLi.offsetTop;
+        const liBottom = liTop + activeLi.offsetHeight;
+        if (liTop < prosenseEl.scrollTop) {
+            prosenseEl.scrollTop = liTop;
+        } else if (liBottom > prosenseEl.scrollTop + prosenseEl.clientHeight) {
+            prosenseEl.scrollTop = liBottom - prosenseEl.clientHeight;
+        }
+    }
 
     updateWidgetPosition();
 }
@@ -264,7 +321,7 @@ function getHtmlContext(text, cursorIndex) {
     return 'html';
 }
 
-function evaluateProSense(fileName) {
+function evaluateProSense(fileName, manual = false) {
     if (!editorEl) return;
 
     let ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
@@ -305,15 +362,16 @@ function evaluateProSense(fileName) {
     const charBefore = editorEl.value[cursor - word.length - 1];
     const isMemberAccess = charBefore === '.';
     
-    // Allow empty words if we are right after a dot (member access context)
-    if ((!word && !isMemberAccess) || completions.length === 0) {
+    // Allow empty words if we are right after a dot (member access context),
+    // or if the popup was explicitly requested via a manual trigger (Ctrl+Space).
+    if ((!word && !isMemberAccess && !manual) || completions.length === 0) {
         hideProSense();
         return;
     }
 
     const wordLower = word.toLowerCase();
-    // Only verify exact matching constraints if a word is typed
-    if (word && completions.some(item => item.label.toLowerCase() === wordLower)) {
+    // Only verify exact matching constraints if a word is typed (skipped for manual triggers)
+    if (!manual && word && completions.some(item => item.label.toLowerCase() === wordLower)) {
         hideProSense();
         return;
     }
@@ -360,4 +418,19 @@ export function handleProSenseInput(fileName, extraBuffers = []) {
     delayTimeout = setTimeout(() => {
         evaluateProSense(fileName);
     }, 180);
+}
+
+/**
+ * Manually force-opens the completion popup (e.g. Ctrl+Space), bypassing the
+ * input debounce and the "empty word" / "already exact" suppression guards.
+ */
+export function triggerProSense(fileName, extraBuffers = []) {
+    if (!editorEl) return;
+    if (localStorage.getItem('prosense-enabled') === 'false') {
+        hideProSense();
+        return;
+    }
+    if (delayTimeout) clearTimeout(delayTimeout);
+    latestExtraBuffers = extraBuffers;
+    evaluateProSense(fileName, true);
 }

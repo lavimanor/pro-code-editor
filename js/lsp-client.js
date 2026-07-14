@@ -116,12 +116,20 @@ export class LspClient {
             rootUri: rootUri,
             capabilities: {
                 workspace: {
-                    // Advertise workspace configuration change capability (Added Fix)
+                    // Advertise workspace configuration change capability
                     didChangeConfiguration: { dynamicRegistration: true }
                 },
                 textDocument: {
+                    // Explicitly advertise document synchronization support to enable real-time typing analysis (Added Fix)
+                    synchronization: {
+                        dynamicRegistration: true,
+                        willSave: true,
+                        willSaveWaitUntil: true,
+                        didSave: true
+                    },
                     completion: { completionItem: { snippetSupport: true } },
                     hover: {},
+                    // Explicitly advertise standard diagnostic properties to activate server push streams
                     publishDiagnostics: {
                         relatedInformation: true,
                         tagSupport: { valueSet: [1, 2] },
@@ -134,7 +142,7 @@ export class LspClient {
             this.sendNotification('initialized', {});
             
             // Broadcast settings dynamically via workspace/didChangeConfiguration to satisfy
-            // servers (like typescript-language-server) that expect config updates (Added Fix)
+            // servers (like typescript-language-server) that expect config updates
             if (initializationOptions) {
                 this.sendNotification('workspace/didChangeConfiguration', {
                     settings: initializationOptions

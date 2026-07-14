@@ -55,6 +55,19 @@ By clicking **Reload** inside the Plugins Manager panel, developers can flush in
 ### 5. Multi-Language Highlighting Core
 The core syntax highlighter uses lookbehind and alternative capture-group regular expressions to process code. In HTML documents, a specialized block-splitter automatically isolates `<style>` and `<script>` tags, highlighting their contents using CSS and JS rules dynamically.
 
+### 6. Editor Shortcuts & Line Operations
+Beyond auto-pairing, auto-indent and tag auto-closing, the editor provides language-aware line operations:
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl/Cmd + /` | Toggle comment (line-style for JS/PY/etc., block-style for CSS/HTML) |
+| `Alt + ↑ / ↓` | Move the current line or selection up / down |
+| `Shift + Alt + ↑ / ↓` | Duplicate the current line or selection |
+| `Ctrl/Cmd + Shift + K` | Delete the current line |
+| `Ctrl/Cmd + Space` | Manually trigger ProSense autocomplete |
+
+ProSense completion entries may include a `detail` signature hint and a `$0` caret placeholder in their `insertText` to control where the cursor lands after insertion.
+
 ---
 
 ## Directory Conventions

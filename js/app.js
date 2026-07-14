@@ -9,11 +9,13 @@ import { renderFileTree, renderTabs } from './ui-handler.js';
 import { renderThemeSelector, applyTheme } from './themes.js';
 import { renderIconSelector } from './icons.js';
 import { registerCoreLanguages } from './prosense-db/registry.js';
-import { renderSyntaxHighlighting } from './syntax.js';
-import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBeforeCursor, hideProSense } from './prosense.js';
+import { renderSyntaxHighlighting, highlightCodeToHTML } from './syntax.js';
+import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBeforeCursor, hideProSense, triggerProSense } from './prosense.js';
+import { handleLineOperations } from './line-ops.js';
 import { initMinimapScroll } from './minimap.js';
 import { getCustomSnippets, saveCustomSnippets, renderSnippetsList } from './snippets.js';
 import { initTerminal, toggleTerminal, updateTerminalPrompt, printToTerminal, appendOutputChunk, setRunState } from './terminal.js';
+import { initFindReplace } from './find.js';
 
 // Application State Models
 let rootDirectoryHandle = null;
@@ -686,9 +688,105 @@ function lspPositionToOffset(text, line, character) {
     return offset + character;
 }
 
+/**
+ * Converts absolute index offsets back into 0-based LSP line/character coordinates (Added Fix)
+ */
+function offsetToLspPosition(text, offset) {
+    const cleanText = text.replace(/\r/g, '');
+    const lines = cleanText.split('\n');
+    let accumulated = 0;
+    for (let i = 0; i < lines.length; i++) {
+        const lineLength = lines[i].length + 1; // +1 for newline character
+        if (offset < accumulated + lineLength) {
+            return {
+                line: i,
+                character: offset - accumulated
+            };
+        }
+        accumulated += lineLength;
+    }
+    return { line: Math.max(0, lines.length - 1), character: 0 };
+}
+
+function escapeHTML(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Standardizes incoming LSP hover payload contents (Added Fix)
+ */
+function parseHoverContents(contents) {
+    if (!contents) return '';
+    if (typeof contents === 'string') return contents;
+    if (Array.isArray(contents)) {
+        return contents.map(item => parseHoverContents(item)).join('\n');
+    }
+    if (contents.value) return contents.value;
+    return '';
+}
+
+/**
+ * Lightweight markdown renderer for LSP hover payloads (Added Fix).
+ * Splits fenced code blocks (the type signature) from prose docs and applies
+ * minimal inline formatting so tooltips read like a real IDE instead of raw markdown.
+ */
+function resolveHoverLang(fenceLang, defaultLang) {
+    const alias = { ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', py: 'python' };
+    let l = (fenceLang || '').toLowerCase();
+    if (alias[l]) l = alias[l];
+    return l || defaultLang || null;
+}
+
+function renderHoverMarkdown(md, defaultLang) {
+    const parts = [];
+    const fenceRe = /```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g;
+    let lastIdx = 0;
+    let m;
+    while ((m = fenceRe.exec(md)) !== null) {
+        if (m.index > lastIdx) parts.push({ code: false, text: md.slice(lastIdx, m.index) });
+        parts.push({ code: true, lang: m[1], text: m[2].replace(/\n+$/, '') });
+        lastIdx = fenceRe.lastIndex;
+    }
+    if (lastIdx < md.length) parts.push({ code: false, text: md.slice(lastIdx) });
+
+    return parts.map(part => {
+        if (part.code) {
+            if (!part.text.trim()) return '';
+            const langId = resolveHoverLang(part.lang, defaultLang);
+            let inner;
+            try {
+                inner = highlightCodeToHTML(part.text.trim(), langId);
+            } catch (err) {
+                inner = escapeHTML(part.text.trim());
+            }
+            return `<pre class="hover-code">${inner}</pre>`;
+        }
+        let t = escapeHTML(part.text);
+        t = t.replace(/`([^`]+)`/g, '<code class="hover-inline-code">$1</code>');
+        t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        t = t.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+        t = t.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+        // Markdown links: [text](url) -> just the visible text
+        t = t.replace(/\[([^\]]+)\]\((?:[^)]+)\)/g, '$1');
+        // ATX headings (### Foo) -> bold section titles
+        t = t.replace(/^\s{0,3}#{1,6}\s+(.+?)\s*#*$/gm, '<strong class="hover-heading">$1</strong>');
+        // Normalize bullet list markers to a real bullet glyph
+        t = t.replace(/^(\s*)[-*+]\s+/gm, '$1• ');
+        // Horizontal rules used by tsserver to separate sections
+        t = t.replace(/^\s*---+\s*$/gm, '<hr class="hover-rule">');
+        t = t.replace(/\n{3,}/g, '\n\n').trim();
+        if (!t) return '';
+        return `<div class="hover-doc-text">${t}</div>`;
+    }).join('');
+}
+
 // Global storage caches for active workspace diagnostics (Added Fix)
 window.activeDiagnosticsCache = new Map();
 window.activeDiagnostics = [];
+
+// Active hover trackers to prevent cursor movement flickers (Added Fix)
+window.lastHoverOffset = -1;
+window.lastHoverDiag = null;
 
 /**
  * Converts a standard file:// URI into a clean OS-native file path (Added Fix)
@@ -769,17 +867,40 @@ editor.addEventListener('input', () => {
     if (activeFileHandle) {
         tabContentsCache.set(fileKey(activeFileHandle), editor.value);
     }
+
+    // Real-time offset tracking for active diagnostics on typing
+    const currentLength = editor.value.length;
+    const delta = currentLength - (window.lastTextLength || currentLength);
+    const cursor = editor.selectionStart;
+
+    if (delta !== 0 && window.activeDiagnostics && window.activeDiagnostics.length > 0) {
+        const editPoint = delta > 0 ? cursor - delta : cursor;
+
+        window.activeDiagnostics.forEach(diag => {
+            if (diag.start >= editPoint) {
+                diag.start += delta;
+                diag.end += delta;
+            } else if (diag.end > editPoint) {
+                diag.end += delta;
+            }
+        });
+    }
+    window.lastTextLength = currentLength;
+
     runLayoutRenderEngine();
 
-    // Sync current document state changes back to active LSP servers
+    // Sync current document state changes back to active LSP servers (Added Fix)
     if (activeFileHandle) {
         const fileExt = activeFileHandle.name.split('.').pop().toLowerCase();
-        const lspEntry = api.languages.getLspClient(fileExt);
+        const langConfig = api.languages.get(fileExt);
+        const lspKey = langConfig ? langConfig.name.toLowerCase() : fileExt;
+        const lspEntry = api.languages.getLspClient(lspKey) || api.languages.getLspClient(fileExt);
+
         if (lspEntry && lspEntry.client) {
             const cachedVersions = (window.lspVersionCache = window.lspVersionCache || {});
             const currentVersion = cachedVersions[fileKey(activeFileHandle)] = (cachedVersions[fileKey(activeFileHandle)] || 1) + 1;
             
-            // Ensure no \r characters are sent to the LSP during edits (Added Fix)
+            // Ensure no \r characters are sent to the LSP during edits
             const cleanText = editor.value.replace(/\r/g, '');
             lspEntry.client.didChange(activeFileHandle.path, currentVersion, cleanText);
         }
@@ -813,6 +934,13 @@ editor.addEventListener('click', () => {
 editor.addEventListener('keyup', (e) => {
     // Hide autocomplete if caret navigates away using Arrow keys [2]
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+        // When the popup is open it consumes Up/Down/Enter/Tab in keydown to navigate the
+        // list, so the caret never moved — don't dismiss it on the arrow key release (Added Fix)
+        const widget = document.getElementById('prosense-widget');
+        if (widget && !widget.classList.contains('prosense-hidden') &&
+            (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+            return;
+        }
         hideProSense();
         runLayoutRenderEngine();
     }
@@ -826,7 +954,27 @@ editor.addEventListener('blur', () => {
 });
 
 editor.addEventListener('keydown', (e) => {
+    // Line operations (comment toggle, move/duplicate/delete line) claim their own
+    // modifier combos and run before ProSense so Alt+Arrow never navigates the popup.
+    if (handleLineOperations(e, editor, activeFileHandle ? activeFileHandle.name : '')) {
+        hideProSense();
+        return;
+    }
+
     if (handleProSenseKeydown(e)) {
+        return;
+    }
+
+    // Ctrl+Space (or Cmd+Space) manually opens the completion popup (Added Fix)
+    if ((e.ctrlKey || e.metaKey) && (e.code === 'Space' || e.key === ' ')) {
+        e.preventDefault();
+        const activeName = activeFileHandle ? activeFileHandle.name : '';
+        const activeKey = fileKey(activeFileHandle);
+        const manualBuffers = [];
+        for (const [key, buf] of tabContentsCache) {
+            if (key !== activeKey && buf) manualBuffers.push(buf);
+        }
+        triggerProSense(activeName, manualBuffers);
         return;
     }
 
@@ -1110,6 +1258,7 @@ async function handleOpenFile(fileHandle) {
         }
 
         editor.value = contents;
+        window.lastTextLength = contents.length; // Track length for real-time offset adjustments (Added Fix)
         editor.disabled = false;
         btnSaveFile.disabled = false;
         filePathDisplay.textContent = "Workspace / " + activeFileHandle.name;
@@ -1598,6 +1747,9 @@ initProSense(editor, editorSurfaceBox);
 // Initialize Terminal Panel Context
 initTerminal(bottomPanel, terminalOutput, terminalInput, terminalPrompt);
 
+// Initialize Find & Replace (Ctrl+F find, Ctrl+R replace)
+initFindReplace();
+
 /**
  * Sequential Boot Loader: Ensures core subsystems and plugins load 
  * prior to building selectors or configuring the workspace.
@@ -1842,3 +1994,228 @@ if (isElectronApp && ipcRenderer) {
         return res;
     };
 }
+
+// =====================================================================
+//  Interactive LSP & Diagnostics Hover Subsystem (Added Fix)
+// =====================================================================
+let hoverTimeout = null;
+// Monotonic token to discard stale async LSP hover responses (Added Fix)
+let hoverRequestSeq = 0;
+
+function hideHoverPopup() {
+    // Invalidate any in-flight hover request so a late response can't repopulate a closed popup
+    hoverRequestSeq++;
+    const popup = document.getElementById('lsp-hover-popup');
+    if (popup) {
+        popup.style.display = 'none';
+    }
+}
+
+/**
+ * Helper to probe and retrieve the element under the cursor from the backdrop (Added Fix)
+ */
+function getHoveredElement(e) {
+    const backdrop = document.getElementById('editor-backdrop');
+    if (!backdrop) return null;
+
+    // Temporarily bypass input layer and enable backdrop hits
+    editor.style.pointerEvents = 'none';
+    backdrop.style.pointerEvents = 'auto';
+
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+
+    // Instantly restore original pointer-events values
+    editor.style.pointerEvents = 'auto';
+    backdrop.style.pointerEvents = 'none';
+
+    return el;
+}
+
+function showHoverPopup(clientX, clientY, globalIndex, activeDiag, client) {
+    let popup = document.getElementById('lsp-hover-popup');
+    if (!popup) {
+        popup = document.createElement('div');
+        popup.id = 'lsp-hover-popup';
+        document.body.appendChild(popup); // Append to body to prevent overflow clippings
+    }
+
+    popup.innerHTML = '';
+    let htmlContent = '';
+    
+    // 1. Draw Local Diagnostic alert if present
+    if (activeDiag) {
+        const severityLabel = activeDiag.severity === 1 ? 'Error' : 'Warning';
+        const severityColor = activeDiag.severity === 1 ? '#ef5350' : '#ffcc00';
+        htmlContent += `
+            <div style="display:flex; align-items:center; gap:6px; font-weight:600; color:${severityColor}; margin-bottom:4px;">
+                <i class="fa-solid fa-triangle-exclamation"></i> ${severityLabel}:
+            </div>
+            <div style="color:var(--text-main); margin-bottom:4px; font-style:italic; line-height:1.4;">${escapeHTML(activeDiag.message)}</div>
+        `;
+    }
+
+    popup.innerHTML = htmlContent || '<div class="hover-loading">Loading details…</div>';
+    popup.style.display = 'block';
+
+    // Calculate safe clamped boundaries to prevent off-screen clipping
+    const popupWidth = 360;
+    const popupHeight = popup.offsetHeight || 80;
+
+    let top = clientY + 16; // 16px below cursor
+    let left = clientX + 8;
+
+    if (left + popupWidth > window.innerWidth) {
+        left = window.innerWidth - popupWidth - 12;
+    }
+    if (top + popupHeight > window.innerHeight) {
+        top = clientY - popupHeight - 12; // Flip above cursor if overflowing bottom boundary
+    }
+
+    left = Math.max(12, left);
+    top = Math.max(12, top);
+
+    popup.style.top = `${top}px`;
+    popup.style.left = `${left}px`;
+
+    // 2. Query active LSP hover documentation
+    if (client && activeFileHandle) {
+        const reqId = ++hoverRequestSeq;
+        const text = editor.value;
+        const pos = offsetToLspPosition(text, globalIndex);
+        // Highlight code snippets using the current file's language grammar
+        const fileConfig = api.languages.get((activeFileHandle.name.split('.').pop() || '').toLowerCase());
+        const defaultLang = fileConfig ? fileConfig.name.toLowerCase() : null;
+
+        const settle = (fn) => {
+            // Ignore responses superseded by a newer hover or a dismissal (Added Fix)
+            if (reqId !== hoverRequestSeq) return;
+            if (popup.style.display === 'none') return;
+            fn();
+        };
+
+        client.hover(activeFileHandle.path, pos.line, pos.character).then(res => {
+            settle(() => {
+                const hoverText = res && res.result ? parseHoverContents(res.result.contents) : '';
+                if (hoverText && hoverText.trim() !== '') {
+                    const docDiv = document.createElement('div');
+                    docDiv.className = 'hover-doc';
+                    if (activeDiag) {
+                        docDiv.style.borderTop = '1px solid var(--border-color)';
+                        docDiv.style.paddingTop = '6px';
+                        docDiv.style.marginTop = '6px';
+                    }
+                    docDiv.innerHTML = renderHoverMarkdown(hoverText.trim(), defaultLang);
+
+                    if (!activeDiag) {
+                        popup.innerHTML = '';
+                    }
+                    popup.appendChild(docDiv);
+
+                    // Re-clamp bottom boundary with dynamic content height
+                    const dynamicHeight = popup.offsetHeight || 120;
+                    if (top + dynamicHeight > window.innerHeight) {
+                        popup.style.top = `${Math.max(12, clientY - dynamicHeight - 12)}px`;
+                    }
+                } else if (!activeDiag) {
+                    hideHoverPopup();
+                }
+            });
+        }).catch(() => {
+            settle(() => { if (!activeDiag) hideHoverPopup(); });
+        });
+    }
+}
+
+function handleHoverEvent(e) {
+    if (!activeFileHandle) return;
+    const el = getHoveredElement(e);
+    if (!el) return;
+
+    // Resolve closest data-offset tracking attribute
+    const offsetAttr = el.getAttribute('data-offset') || el.closest('[data-offset]')?.getAttribute('data-offset');
+    if (offsetAttr === null || offsetAttr === undefined) return;
+
+    const globalIndex = parseInt(offsetAttr, 10);
+    const activeDiag = window.activeDiagnostics ? window.activeDiagnostics.find(d => globalIndex >= d.start && globalIndex < d.end) : null;
+    
+    // Save current hover states to prevent refires (Added Fix)
+    window.lastHoverOffset = globalIndex;
+    window.lastHoverDiag = activeDiag;
+
+    // Check if an LSP server is active for the current document
+    const fileExt = activeFileHandle.name.split('.').pop().toLowerCase();
+    const langConfig = api.languages.get(fileExt);
+    const lspKey = langConfig ? langConfig.name.toLowerCase() : fileExt;
+    const lspEntry = api.languages.getLspClient(lspKey) || api.languages.getLspClient(fileExt);
+
+    if (activeDiag || (lspEntry && lspEntry.client && lspEntry.client.isStarted)) {
+        showHoverPopup(e.clientX, e.clientY, globalIndex, activeDiag, lspEntry ? lspEntry.client : null);
+    }
+}
+
+// Bind mouse listeners
+editor.addEventListener('mousemove', (e) => {
+    if (hoverTimeout) clearTimeout(hoverTimeout);
+    
+    // 1. If the mouse is inside or entering the hover popup, do not close (Added Fix)
+    const popup = document.getElementById('lsp-hover-popup');
+    if (popup && popup.style.display === 'block') {
+        const rect = popup.getBoundingClientRect();
+        const buffer = 16; // 16px bridge padding space
+        if (e.clientX >= rect.left - buffer && e.clientX <= rect.right + buffer &&
+            e.clientY >= rect.top - buffer && e.clientY <= rect.bottom + buffer) {
+            return;
+        }
+    }
+
+    // 2. Perform a fast element check to see if we are still hovering over the same active block (Added Fix)
+    const el = getHoveredElement(e);
+    if (el) {
+        const offsetAttr = el.getAttribute('data-offset') || el.closest('[data-offset]')?.getAttribute('data-offset');
+        if (offsetAttr !== null && offsetAttr !== undefined) {
+            const globalIndex = parseInt(offsetAttr, 10);
+            const activeDiag = window.activeDiagnostics ? window.activeDiagnostics.find(d => globalIndex >= d.start && globalIndex < d.end) : null;
+            
+            // If we are hovering over the exact same diagnostic block, do absolutely nothing (Added Fix)
+            if (activeDiag && window.lastHoverDiag === activeDiag) {
+                return;
+            }
+            
+            // If no diagnostic, but still hovering over the same character, do nothing (Added Fix)
+            if (!activeDiag && window.lastHoverOffset === globalIndex) {
+                return;
+            }
+        }
+    }
+
+    // Hide popup immediately on mouse movements outside the active token or buffer zones
+    hideHoverPopup();
+    window.lastHoverOffset = -1;
+    window.lastHoverDiag = null;
+
+    // Open hover window after 300ms hover delay
+    hoverTimeout = setTimeout(() => {
+        handleHoverEvent(e);
+    }, 300);
+});
+
+editor.addEventListener('mouseleave', () => {
+    if (hoverTimeout) clearTimeout(hoverTimeout);
+    hideHoverPopup();
+    window.lastHoverOffset = -1;
+    window.lastHoverDiag = null;
+});
+
+editor.addEventListener('scroll', () => {
+    hideHoverPopup();
+});
+
+// Dismiss the hover popup with Escape (Added Fix)
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const popup = document.getElementById('lsp-hover-popup');
+        if (popup && popup.style.display === 'block') {
+            hideHoverPopup();
+        }
+    }
+});

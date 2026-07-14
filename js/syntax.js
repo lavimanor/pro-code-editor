@@ -4,7 +4,7 @@ import { api } from './api-core.js';
 const genericFallbackRules = [
     { type: 'comment', regex: /\/\*[\s\S]*?\*\/|\/\/.*|#.*|--.*/ },
     { type: 'string', regex: /`(?:\\.|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/ },
-    { type: 'number', regex: /\b\d+(?:\.\d+)?\b/ },
+    { type: 'number', regex: /\b(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)n?\b/ },
     { type: 'bracket', regex: /[{}()[\]]/ },
     { type: 'punctuation', regex: /[.,;:?]|=>|&&|\|\||[-=+\/*%!<>^&|~]/ }
 ];
@@ -113,6 +113,30 @@ function tokenizeWithOffset(text, compiledModel, offset) {
         token.start += offset;
     });
     return tokens;
+}
+
+/**
+ * Standalone syntax highlighter for isolated code snippets (e.g. LSP hover tooltips).
+ * Tokenizes `code` with the highlighter registered for `langId` (falling back to the
+ * universal generic model) and returns HTML with <span class="syntax-*"> wrappers so
+ * snippets pick up the exact same theme colors as the editor backdrop.
+ */
+export function highlightCodeToHTML(code, langId) {
+    const cleanText = (code || '').replace(/\r/g, '');
+    const model = (langId && api.languages.getHighlighter(langId)) || compiledGenericModel;
+    const tokens = tokenize(cleanText, model);
+
+    let html = '';
+    tokens.forEach(token => {
+        const safe = token.text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        html += token.type !== 'text'
+            ? `<span class="syntax-${token.type}">${safe}</span>`
+            : safe;
+    });
+    return html;
 }
 
 /**
@@ -291,10 +315,12 @@ function escapeAndMarkChar(char, globalIndex, highlightIndices, cursorIndex) {
         escaped = `<span class="bracket-highlight">${escaped}</span>`;
     }
 
+    // Always wrap in a data-offset span so the mouse hover probe can find the character index (Added Fix)
+    const offsetAttr = `data-offset="${globalIndex}"`;
     if (wrapperClass) {
-        out += `<span class="${wrapperClass}">${escaped}</span>`;
+        out += `<span class="${wrapperClass}" ${offsetAttr}>${escaped}</span>`;
     } else {
-        out += escaped;
+        out += `<span ${offsetAttr}>${escaped}</span>`;
     }
 
     return out;
