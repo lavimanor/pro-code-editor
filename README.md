@@ -40,6 +40,12 @@ All workspace attributes are registered via standard API endpoints:
 *   `api.views.registerSetting(id, config)`: Contributes dynamic user preference options with persistent browser caching.
 *   `api.workspace.registerIDE(id, config)`: Contributes custom IDE workspaces, top-bar toolbars, and empty welcome dashboards.
 
+See more about plugins:
+
+[Extensions Instructions](instructions/extensions.md)
+
+[IDEs Instructions](instructions/ides.md)
+
 ### 2. High-Performance Resizable Layout
 Horizontal and vertical splitters allow you to slide and customize the size of your explorer and terminal panels. Features include:
 *   **Persistent Memory:** Sidebar width and terminal height persist dynamically inside `localStorage` across application reloads.
@@ -88,123 +94,6 @@ ProSense completion entries may include a `detail` signature hint and a `$0` car
 
 ---
 
-## Directory Conventions
-
-Custom plugins must reside inside the root-level `custom/` directory, organized by plugin type:
-
-```
-custom/
-  extensions/
-    web-languages-pack/     # Multi-file web languages syntax/autocomplete pack
-      package.json          # Manifest metadata
-      index.js              # Activation entry point
-      icon.svg              # (optional) plugin icon — SVG/PNG/JPG/GIF/WEBP/ICO/BMP/AVIF
-      rules/
-        html-rules.js       # HTML token regexes
-        css-rules.js        # CSS token regexes
-        js-rules.js         # JS token regexes
-  ides/
-    web-dev-ide/            # Custom Web Creator IDE environment
-      package.json          # Manifest metadata (may declare extensionDependencies)
-      index.js              # Toolbars, templates, and welcome overlay scripts
-      extensions/           # Integrated extensions bundled with (and owned by) the IDE
-        web-snippets/
-          package.json
-          index.js
-```
-
-### Plugin & IDE Icons
-Every extension and IDE can ship its own icon. Point the manifest at a file with the `icon`
-field, or simply drop a conventionally-named `icon.*` file in the plugin folder and it is
-auto-detected. Supported formats: **SVG, PNG, JPG/JPEG, GIF, WEBP, ICO, BMP, AVIF**. When no
-icon is provided, a neutral placeholder is shown — `assets/placeholder-extension.svg` for
-extensions and `assets/placeholder-ide.svg` for IDEs — which you can also use as a starting
-template for your own artwork.
-
-### Integrated & Dependent Extensions (IDEs)
-IDEs are themselves activated exactly like extensions — their `activate(api)` entry point can
-register themes, languages, highlighters, runners, settings, and panels — and then additionally
-call `api.workspace.registerIDE(...)` to contribute a full workspace. On top of that, an IDE can
-own extensions two ways:
-
-* **Integrated (bundled):** extensions placed in the IDE's own `extensions/` subfolder are
-  discovered and activated together with the IDE, and are disabled automatically when it is.
-* **Dependent (declared):** the manifest's `extensionDependencies` array lists extension ids the
-  IDE requires. Missing dependencies block the IDE from activating; present ones are force-enabled
-  and locked (they cannot be manually disabled) for as long as the IDE is enabled.
-
-Both relationships are surfaced with relationship chips and a lock indicator in the Plugins
-Manager panel.
-
----
-
-## Developing Plugins
-
-### 1. The Manifest (`package.json`)
-Every extension or IDE must contain a manifest declaring its package properties:
-
-```json
-{
-  "id": "my-plugin-id",
-  "name": "My Custom Plugin",
-  "description": "Adds a custom workflow helper.",
-  "version": "1.0.0",
-  "apiVersion": "1.0.0",
-  "type": "extension",
-  "main": "index.js",
-  "icon": "icon.svg"
-}
-```
-
-IDEs use `"type": "ide"` and may additionally declare the extensions they depend on:
-
-```json
-{
-  "id": "web-dev-ide",
-  "name": "Web Creator IDE",
-  "version": "1.0.0",
-  "apiVersion": "1.0.0",
-  "type": "ide",
-  "main": "index.js",
-  "icon": "icon.png",
-  "extensionDependencies": ["web-snippets"]
-}
-```
-
-> `icon` is optional. Any supported image file named `icon.*` in the plugin folder is picked up
-> automatically, and a placeholder is used if none is present.
-
-### 2. The Activation Entry Point (`index.js`)
-The main script must export an `activate(api)` function. This function receives the central host API context to register its features:
-
-```javascript
-export function activate(api) {
-    // Register a custom setting
-    api.views.registerSetting('custom-boolean-pref', {
-        label: 'Enable Custom Feature',
-        type: 'checkbox',
-        defaultValue: false,
-        onChange: (isChecked) => {
-            console.log("Preference updated: ", isChecked);
-        }
-    });
-
-    // Register a custom sidebar panel
-    api.views.registerSidebarPanel('custom-monitor', {
-        iconClass: 'fa-solid fa-chart-line',
-        title: 'System Monitor',
-        render: (container) => {
-            container.innerHTML = `<h4>Status: Normal</h4>`;
-        }
-    });
-}
-
-export function deactivate() {
-    console.log("Cleanup on disable or reload...");
-}
-```
-
----
 
 ## Installation & Running
 
@@ -225,3 +114,9 @@ Ensure you have [Node.js](https://nodejs.org/) and npm installed.
 ## License
 
 This project is licensed under the MIT License - see the `LICENSE` file for details.
+
+## Plugins Instructions
+
+[Extensions Instructions](instructions/extensions.md)
+
+[IDEs Instructions](instructions/ides.md)
