@@ -64,7 +64,25 @@ Beyond auto-pairing, auto-indent and tag auto-closing, the editor provides langu
 | `Alt + ↑ / ↓` | Move the current line or selection up / down |
 | `Shift + Alt + ↑ / ↓` | Duplicate the current line or selection |
 | `Ctrl/Cmd + Shift + K` | Delete the current line |
+| `Tab / Shift + Tab` | Indent / outdent the selected line(s) |
+| `Ctrl/Cmd + G` | Go to line |
+| `Ctrl/Cmd + Shift + [` | Collapse (fold) the region at the caret |
+| `Ctrl/Cmd + Shift + ]` | Expand (unfold) the region at the caret |
 | `Ctrl/Cmd + Space` | Manually trigger ProSense autocomplete |
+
+The footer status bar shows a live **Ln / Col** readout (with selection size and line
+count while text is selected) and the active file's language. The cursor readout is
+clickable and opens the same **Go to Line** prompt as `Ctrl/Cmd + G`; folded regions are
+expanded automatically so any line stays reachable.
+
+### 7. Code Folding
+Structural regions — classes, functions, objects, blocks, and indentation scopes — can be
+collapsed and expanded directly in the editor. Hover the line gutter to reveal fold arrows,
+or use the keyboard shortcuts above. Folding is **view-only**: the gutter keeps showing true
+file line numbers, a `⋯ N lines` badge marks each collapsed region, and the full document is
+transparently reconstructed for saving, LSP synchronization, and code execution so nothing is
+ever lost. Bracket scopes (`{ [ (`) and colon-introduced indent scopes (Python/YAML) are both
+detected automatically.
 
 ProSense completion entries may include a `detail` signature hint and a `$0` caret placeholder in their `insertText` to control where the cursor lands after insertion.
 
@@ -80,15 +98,43 @@ custom/
     web-languages-pack/     # Multi-file web languages syntax/autocomplete pack
       package.json          # Manifest metadata
       index.js              # Activation entry point
+      icon.svg              # (optional) plugin icon — SVG/PNG/JPG/GIF/WEBP/ICO/BMP/AVIF
       rules/
         html-rules.js       # HTML token regexes
         css-rules.js        # CSS token regexes
         js-rules.js         # JS token regexes
   ides/
     web-dev-ide/            # Custom Web Creator IDE environment
-      package.json          # Manifest metadata
+      package.json          # Manifest metadata (may declare extensionDependencies)
       index.js              # Toolbars, templates, and welcome overlay scripts
+      extensions/           # Integrated extensions bundled with (and owned by) the IDE
+        web-snippets/
+          package.json
+          index.js
 ```
+
+### Plugin & IDE Icons
+Every extension and IDE can ship its own icon. Point the manifest at a file with the `icon`
+field, or simply drop a conventionally-named `icon.*` file in the plugin folder and it is
+auto-detected. Supported formats: **SVG, PNG, JPG/JPEG, GIF, WEBP, ICO, BMP, AVIF**. When no
+icon is provided, a neutral placeholder is shown — `assets/placeholder-extension.svg` for
+extensions and `assets/placeholder-ide.svg` for IDEs — which you can also use as a starting
+template for your own artwork.
+
+### Integrated & Dependent Extensions (IDEs)
+IDEs are themselves activated exactly like extensions — their `activate(api)` entry point can
+register themes, languages, highlighters, runners, settings, and panels — and then additionally
+call `api.workspace.registerIDE(...)` to contribute a full workspace. On top of that, an IDE can
+own extensions two ways:
+
+* **Integrated (bundled):** extensions placed in the IDE's own `extensions/` subfolder are
+  discovered and activated together with the IDE, and are disabled automatically when it is.
+* **Dependent (declared):** the manifest's `extensionDependencies` array lists extension ids the
+  IDE requires. Missing dependencies block the IDE from activating; present ones are force-enabled
+  and locked (they cannot be manually disabled) for as long as the IDE is enabled.
+
+Both relationships are surfaced with relationship chips and a lock indicator in the Plugins
+Manager panel.
 
 ---
 
@@ -105,9 +151,28 @@ Every extension or IDE must contain a manifest declaring its package properties:
   "version": "1.0.0",
   "apiVersion": "1.0.0",
   "type": "extension",
-  "main": "index.js"
+  "main": "index.js",
+  "icon": "icon.svg"
 }
 ```
+
+IDEs use `"type": "ide"` and may additionally declare the extensions they depend on:
+
+```json
+{
+  "id": "web-dev-ide",
+  "name": "Web Creator IDE",
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "type": "ide",
+  "main": "index.js",
+  "icon": "icon.png",
+  "extensionDependencies": ["web-snippets"]
+}
+```
+
+> `icon` is optional. Any supported image file named `icon.*` in the plugin folder is picked up
+> automatically, and a placeholder is used if none is present.
 
 ### 2. The Activation Entry Point (`index.js`)
 The main script must export an `activate(api)` function. This function receives the central host API context to register its features:

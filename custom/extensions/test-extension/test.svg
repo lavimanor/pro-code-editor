@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Sample Dynamic Theme Extension icon">
+  <defs>
+    <linearGradient id="theme1-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a1f2b"/>
+      <stop offset="1" stop-color="#5c2a44"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded plate -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#theme1-grad)" stroke="#f472b6" stroke-width="1.6"/>
+  <!-- Artist palette -->
+  <path d="M32 15c-10 0-18 7-18 16 0 6 5 9 10 9 3 0 4-2 4-4 0-3 2-4 4-4h5c5 0 9-3 9-8 0-8-6-16-14-16z"
+        fill="#2a1620" stroke="#f472b6" stroke-width="1.8"/>
+  <circle cx="24" cy="24" r="2.6" fill="#f87171"/>
+  <circle cx="33" cy="21" r="2.6" fill="#fbbf24"/>
+  <circle cx="41" cy="26" r="2.6" fill="#4ade80"/>
+  <circle cx="24" cy="33" r="2.6" fill="#60a5fa"/>
+  <!-- Thumb hole -->
+  <circle cx="34" cy="33" r="3" fill="#5c2a44"/>
+</svg>

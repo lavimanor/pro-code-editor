@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Web Snippets & Tools icon">
+  <defs>
+    <linearGradient id="snip-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2a1f3d"/>
+      <stop offset="1" stop-color="#3d2a5c"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded plate -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#snip-grad)" stroke="#ba9bff" stroke-width="1.6"/>
+  <!-- Snippet lines -->
+  <rect x="15" y="18" width="20" height="3" rx="1.5" fill="#d9c7ff"/>
+  <rect x="20" y="25" width="18" height="3" rx="1.5" fill="#ba9bff"/>
+  <rect x="20" y="32" width="12" height="3" rx="1.5" fill="#ba9bff"/>
+  <rect x="15" y="39" width="16" height="3" rx="1.5" fill="#d9c7ff"/>
+  <!-- Wrench tool -->
+  <path d="M45 20a6 6 0 0 0-7.6 7.3l-9 9a2.4 2.4 0 1 0 3.4 3.4l9-9A6 6 0 0 0 48 23l-3.3 3.3-2.8-.8-.8-2.8L45 20z" fill="#ffd166" stroke="#3d2a5c" stroke-width="0.8"/>
+</svg>

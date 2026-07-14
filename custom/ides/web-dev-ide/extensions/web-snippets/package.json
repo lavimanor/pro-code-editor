@@ -1,0 +1,9 @@
+{
+  "id": "web-snippets",
+  "name": "Web Snippets & Tools",
+  "description": "Integrated web tooling panel bundled with (and required by) the Web Creator IDE.",
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "type": "extension",
+  "main": "index.js"
+}

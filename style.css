@@ -84,6 +84,101 @@ body {
     object-fit: contain;
 }
 
+/* ── Custom IDE selector dropdown (icon + name per option) ───────────────── */
+.ide-selector {
+    position: relative;
+    margin-left: 12px;
+    font-family: var(--font-ui);
+    -webkit-app-region: no-drag;
+}
+
+.ide-selector-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--bg-sidebar);
+    color: var(--text-main);
+    border: 1px solid var(--border-color);
+    padding: 4px 9px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    outline: none;
+    max-width: 220px;
+}
+
+.ide-selector-trigger:hover {
+    border-color: var(--accent-color);
+}
+
+.ide-selector-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ide-selector-icon {
+    object-fit: contain;
+    flex-shrink: 0;
+    border-radius: 3px;
+}
+
+.ide-selector-chevron {
+    font-size: 8px;
+    color: var(--text-muted);
+    margin-left: 2px;
+    transition: transform 0.15s ease;
+}
+
+.ide-selector.open .ide-selector-chevron {
+    transform: rotate(180deg);
+}
+
+.ide-selector-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 100%;
+    max-width: 260px;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    padding: 4px;
+    z-index: 1000;
+}
+
+.ide-selector.open .ide-selector-menu {
+    display: block;
+}
+
+.ide-selector-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-main);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.ide-selector-option:hover {
+    background: var(--bg-button);
+}
+
+.ide-selector-option.active {
+    background: color-mix(in srgb, var(--accent-color) 22%, transparent);
+}
+
+.ide-selector-option span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .window-title-center {
     display: flex;
     align-items: center;
@@ -363,23 +458,77 @@ button:disabled {
 }
 
 #line-gutter {
-    width: 48px;
+    width: 58px;
     background-color: var(--bg-darker);
     border-right: 1px solid var(--border-color);
     padding: 12px 0;
     font-family: var(--font-code);
     font-size: 14px;
     line-height: 22px;
-    text-align: right;
-    padding-right: 10px;
     color: var(--text-muted);
     user-select: none;
     overflow: hidden;
 }
 
 .gutter-num {
-    display: block;
+    display: flex;
+    align-items: center;
     height: 22px;
+    padding: 0 8px 0 4px;
+    box-sizing: border-box;
+}
+
+.gutter-num.has-fold {
+    background: rgba(125, 125, 125, 0.08);
+}
+
+.gutter-lnum {
+    margin-left: auto;
+    text-align: right;
+}
+
+/* Fold arrows live at the left edge of each gutter row; they fade in on hover
+   unless a region is already collapsed, in which case the arrow stays pinned. */
+.fold-toggle {
+    width: 14px;
+    min-width: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.fold-toggle.empty {
+    cursor: default;
+}
+
+#line-gutter:hover .fold-toggle {
+    opacity: 0.6;
+}
+
+.fold-toggle.folded {
+    opacity: 1;
+    color: var(--accent-color);
+}
+
+.fold-toggle:hover {
+    opacity: 1;
+    color: var(--accent-color);
+}
+
+/* "⋯ N lines" marker painted onto the backdrop at the end of a folded header line. */
+.fold-badge {
+    margin-left: 8px;
+    padding: 0 7px;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: rgba(125, 125, 125, 0.18);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
 }
 
 #editor-surface-box {
@@ -771,6 +920,16 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     align-items: center;
     height: 100%;
     gap: 16px;
+}
+
+.status-clickable {
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: 3px;
+    transition: background-color 0.12s ease;
+}
+.status-clickable:hover {
+    background-color: rgba(255, 255, 255, 0.18);
 }
 
 #snippets-manager {
@@ -1230,4 +1389,16 @@ body.layout-resizing .resizer-h.dragging {
     border: none;
     border-top: 1px solid var(--border-color);
     margin: 6px 0;
+}
+
+/* Plugin / IDE card icon in the Plugins Manager (shipped glyph or placeholder). */
+.plugin-card-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    object-fit: contain;
+    background: rgba(125, 125, 125, 0.10);
+    padding: 2px;
+    box-sizing: border-box;
+    flex-shrink: 0;
 }

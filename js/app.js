@@ -12,6 +12,7 @@ import { registerCoreLanguages } from './prosense-db/registry.js';
 import { renderSyntaxHighlighting, highlightCodeToHTML } from './syntax.js';
 import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBeforeCursor, hideProSense, triggerProSense } from './prosense.js';
 import { handleLineOperations } from './line-ops.js';
+import * as folding from './folding.js';
 import { initMinimapScroll } from './minimap.js';
 import { getCustomSnippets, saveCustomSnippets, renderSnippetsList } from './snippets.js';
 import { initTerminal, toggleTerminal, updateTerminalPrompt, printToTerminal, appendOutputChunk, setRunState } from './terminal.js';
@@ -47,6 +48,8 @@ const tabContainer = document.getElementById('tab-bar');
 const editor = document.getElementById('editor');
 const editorSurfaceBox = document.getElementById('editor-surface-box');
 const filePathDisplay = document.getElementById('current-file-path');
+const statusCursor = document.getElementById('status-cursor');
+const statusLanguage = document.getElementById('status-language');
 
 // Rendering Layout Containers
 const lineGutter = document.getElementById('line-gutter');
@@ -165,33 +168,76 @@ function hideWelcomePage() {
 }
 
 /**
- * Dynamically renders the IDE selector dropdown inside the top bar
+ * Dynamically renders the IDE selector dropdown inside the top bar.
+ *
+ * Implemented as a custom (non-native) dropdown so each option can display the
+ * environment's SVG icon alongside its name — the "Normal Editor" entry falls back
+ * to the application icon, and IDEs use the glyph shipped in their plugin folder.
  */
 window.renderIdeSelector = () => {
     const titleLeft = document.querySelector('.window-title-left');
     if (!titleLeft) return;
 
+    const IDE_PLACEHOLDER = 'assets/placeholder-ide.svg';
+    const APP_ICON = 'icon.png';
+
+    // Resolve the icon path for a given selector value.
+    const iconFor = (value) => {
+        if (value === 'default') return APP_ICON;
+        const cfg = api.workspace.ides.get(value);
+        return (cfg && cfg._iconPath) || IDE_PLACEHOLDER;
+    };
+
+    // Small helper: an <img> that gracefully degrades to the IDE placeholder.
+    const makeIcon = (src, size) => {
+        const img = document.createElement('img');
+        img.className = 'ide-selector-icon';
+        img.alt = '';
+        img.width = size;
+        img.height = size;
+        img.src = src;
+        img.addEventListener('error', () => {
+            if (img.src.indexOf(IDE_PLACEHOLDER) === -1) img.src = IDE_PLACEHOLDER;
+        });
+        return img;
+    };
+
     let selector = document.getElementById('ide-selector');
     if (!selector) {
-        selector = document.createElement('select');
+        selector = document.createElement('div');
         selector.id = 'ide-selector';
-        selector.style.background = 'var(--bg-sidebar)';
-        selector.style.color = 'var(--text-main)';
-        selector.style.border = '1px solid var(--border-color)';
-        selector.style.padding = '4px 10px';
-        selector.style.borderRadius = '4px';
-        selector.style.fontSize = '11px';
-        selector.style.outline = 'none';
-        selector.style.cursor = 'pointer';
-        selector.style.marginLeft = '12px';
-        selector.style.fontFamily = 'var(--font-ui)';
-        selector.style.display = 'none';
+        selector.className = 'ide-selector';
 
-        selector.addEventListener('change', (e) => {
-            window.switchWorkspaceIDE(e.target.value);
-        });
+        const trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.className = 'ide-selector-trigger';
+        trigger.setAttribute('aria-haspopup', 'listbox');
+        trigger.setAttribute('aria-expanded', 'false');
 
+        const menu = document.createElement('div');
+        menu.className = 'ide-selector-menu';
+        menu.setAttribute('role', 'listbox');
+
+        selector.appendChild(trigger);
+        selector.appendChild(menu);
         titleLeft.appendChild(selector);
+
+        const closeMenu = () => {
+            selector.classList.remove('open');
+            trigger.setAttribute('aria-expanded', 'false');
+        };
+        const onDocClick = (e) => { if (!selector.contains(e.target)) closeMenu(); };
+
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const willOpen = !selector.classList.contains('open');
+            selector.classList.toggle('open', willOpen);
+            trigger.setAttribute('aria-expanded', String(willOpen));
+        });
+        document.addEventListener('click', onDocClick);
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+
+        selector._closeMenu = closeMenu;
     }
 
     const ides = api.workspace.ides;
@@ -200,22 +246,46 @@ window.renderIdeSelector = () => {
         return;
     }
 
-    selector.innerHTML = '';
-    
-    // Add baseline Normal Editor options
-    const defOpt = document.createElement('option');
-    defOpt.value = 'default';
-    defOpt.textContent = 'Normal Editor';
-    selector.appendChild(defOpt);
+    const trigger = selector.querySelector('.ide-selector-trigger');
+    const menu = selector.querySelector('.ide-selector-menu');
 
-    ides.forEach((config, id) => {
-        const opt = document.createElement('option');
-        opt.value = id;
-        opt.textContent = config.name;
-        if (api.workspace.activeIdeId === id) {
-            opt.selected = true;
-        }
-        selector.appendChild(opt);
+    // Build the ordered option list: Normal Editor first, then every registered IDE.
+    const options = [{ value: 'default', name: 'Normal Editor' }];
+    ides.forEach((config, id) => options.push({ value: id, name: config.name }));
+
+    const activeValue = api.workspace.activeIdeId || 'default';
+
+    // Render the trigger to reflect the current selection.
+    const activeOption = options.find(o => o.value === activeValue) || options[0];
+    trigger.innerHTML = '';
+    trigger.appendChild(makeIcon(iconFor(activeOption.value), 16));
+    const label = document.createElement('span');
+    label.className = 'ide-selector-label';
+    label.textContent = activeOption.name;
+    trigger.appendChild(label);
+    const chevron = document.createElement('i');
+    chevron.className = 'fa-solid fa-chevron-down ide-selector-chevron';
+    trigger.appendChild(chevron);
+
+    // Render the option menu.
+    menu.innerHTML = '';
+    options.forEach(opt => {
+        const item = document.createElement('div');
+        item.className = 'ide-selector-option' + (opt.value === activeValue ? ' active' : '');
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', String(opt.value === activeValue));
+        item.appendChild(makeIcon(iconFor(opt.value), 18));
+        const optLabel = document.createElement('span');
+        optLabel.textContent = opt.name;
+        item.appendChild(optLabel);
+        item.addEventListener('click', () => {
+            if (selector._closeMenu) selector._closeMenu();
+            if (opt.value !== (api.workspace.activeIdeId || 'default')) {
+                window.switchWorkspaceIDE(opt.value);
+                window.renderIdeSelector();
+            }
+        });
+        menu.appendChild(item);
     });
 
     selector.style.display = 'inline-block';
@@ -864,18 +934,24 @@ editor.addEventListener('input', () => {
         dirtyFiles.add(fileKey(activeFileHandle));
         updateTabsUI();
     }
-    if (activeFileHandle) {
-        tabContentsCache.set(fileKey(activeFileHandle), editor.value);
-    }
-
     // Real-time offset tracking for active diagnostics on typing
     const currentLength = editor.value.length;
     const delta = currentLength - (window.lastTextLength || currentLength);
     const cursor = editor.selectionStart;
+    const editPoint = delta > 0 ? cursor - delta : cursor;
+
+    // Keep fold anchors aligned when the user edits visible text ahead of them. This
+    // MUST run before the full-text cache below, otherwise reconstruction splices the
+    // hidden interior at a stale offset and corrupts the cached document.
+    if (delta !== 0) folding.adjustForEdit(editPoint, delta);
+
+    if (activeFileHandle) {
+        // Cache the reconstructed full document, not the folded view, so tab switching
+        // and diagnostics never lose collapsed interiors.
+        tabContentsCache.set(fileKey(activeFileHandle), folding.getFullText(editor.value));
+    }
 
     if (delta !== 0 && window.activeDiagnostics && window.activeDiagnostics.length > 0) {
-        const editPoint = delta > 0 ? cursor - delta : cursor;
-
         window.activeDiagnostics.forEach(diag => {
             if (diag.start >= editPoint) {
                 diag.start += delta;
@@ -900,8 +976,9 @@ editor.addEventListener('input', () => {
             const cachedVersions = (window.lspVersionCache = window.lspVersionCache || {});
             const currentVersion = cachedVersions[fileKey(activeFileHandle)] = (cachedVersions[fileKey(activeFileHandle)] || 1) + 1;
             
-            // Ensure no \r characters are sent to the LSP during edits
-            const cleanText = editor.value.replace(/\r/g, '');
+            // Ensure no \r characters are sent to the LSP during edits, and always send
+            // the full document (folded interiors reconstructed) so ranges stay correct.
+            const cleanText = folding.getFullText(editor.value).replace(/\r/g, '');
             lspEntry.client.didChange(activeFileHandle.path, currentVersion, cleanText);
         }
     }
@@ -953,7 +1030,74 @@ editor.addEventListener('blur', () => {
     }, 150);
 });
 
+/**
+ * Indent (dir = 1) or outdent (dir = -1) every line touched by the current selection
+ * by one 4-space step, then re-anchor the selection over the same block so Tab /
+ * Shift+Tab can be pressed repeatedly. Used for multi-line selections and Shift+Tab.
+ */
+function indentSelection(el, dir) {
+    const UNIT = '    ';
+    const val = el.value;
+    const selStart = el.selectionStart;
+    const selEnd = el.selectionEnd;
+
+    const blockStart = val.lastIndexOf('\n', selStart - 1) + 1;
+    // Extend to the end of the line the selection ends on. If the selection stops exactly
+    // at a line start (a trailing newline), don't drag the following line into the block.
+    let blockEnd;
+    if (selEnd > selStart && val[selEnd - 1] === '\n') {
+        blockEnd = selEnd - 1;
+    } else {
+        blockEnd = val.indexOf('\n', selEnd);
+        if (blockEnd === -1) blockEnd = val.length;
+    }
+
+    const before = val.slice(0, blockStart);
+    const block = val.slice(blockStart, blockEnd);
+    const after = val.slice(blockEnd);
+
+    let firstLineDelta = 0; // chars added/removed before the first line's start
+    let totalDelta = 0;     // net change across the whole block
+    const lines = block.split('\n').map((line, i) => {
+        if (dir > 0) {
+            if (i === 0) firstLineDelta = UNIT.length;
+            totalDelta += UNIT.length;
+            return UNIT + line;
+        }
+        // Outdent: strip up to one indent step of leading whitespace.
+        const match = line.match(/^[\t ]{1,4}/);
+        const removed = match ? match[0].length : 0;
+        if (i === 0) firstLineDelta = -removed;
+        totalDelta -= removed;
+        return line.slice(removed);
+    });
+
+    // Nothing changed (e.g. outdenting lines that have no leading whitespace): leave the
+    // buffer — and its dirty flag — untouched.
+    if (totalDelta === 0) return;
+
+    el.value = before + lines.join('\n') + after;
+
+    // Keep the selection covering the same block; clamp the anchor to the first line
+    // start so an outdent never pulls the caret up into the previous line.
+    const newStart = Math.max(blockStart, selStart + firstLineDelta);
+    const newEnd = Math.max(newStart, selEnd + totalDelta);
+    el.selectionStart = newStart;
+    el.selectionEnd = newEnd;
+
+    el.dispatchEvent(new Event('input'));
+}
+
 editor.addEventListener('keydown', (e) => {
+    // Code folding: Ctrl/Cmd+Shift+[ collapses the region at the caret, +] expands it.
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.code === 'BracketLeft' || e.code === 'BracketRight')) {
+        e.preventDefault();
+        hideProSense();
+        if (e.code === 'BracketLeft') folding.foldAtCursor();
+        else folding.unfoldAtCursor();
+        return;
+    }
+
     // Line operations (comment toggle, move/duplicate/delete line) claim their own
     // modifier combos and run before ProSense so Alt+Arrow never navigates the popup.
     if (handleLineOperations(e, editor, activeFileHandle ? activeFileHandle.name : '')) {
@@ -984,6 +1128,18 @@ editor.addEventListener('keydown', (e) => {
 
     if (e.key === 'Tab') {
         e.preventDefault();
+
+        const multiLine = val.slice(start, end).includes('\n');
+
+        // Shift+Tab always outdents; Tab across multiple lines indents the whole block.
+        // A plain Tab with a collapsed / single-line selection keeps the simple insert
+        // (which, unlike the old behaviour, no longer silently destroys a selection that
+        // spanned several lines).
+        if (e.shiftKey || multiLine) {
+            indentSelection(editor, e.shiftKey ? -1 : 1);
+            return;
+        }
+
         editor.value = val.substring(0, start) + "    " + val.substring(end);
         editor.selectionStart = editor.selectionEnd = start + 4;
         editor.dispatchEvent(new Event('input'));
@@ -1094,7 +1250,22 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         toggleSettingsPanel();
     }
+    // Ctrl/Cmd+G — Go to line
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'g') {
+        e.preventDefault();
+        handleGoToLine();
+    }
 });
+
+// Keep the status-bar cursor readout live as the selection moves (keyboard or mouse).
+document.addEventListener('selectionchange', () => {
+    if (document.activeElement === editor) updateStatusBar();
+});
+
+// Clicking the Ln/Col readout opens Go to Line, mirroring VS Code.
+if (statusCursor) {
+    statusCursor.addEventListener('click', handleGoToLine);
+}
 
 function toggleSettingsPanel() {
     settingsPanel.classList.toggle('hidden');
@@ -1107,12 +1278,8 @@ function toggleSettingsPanel() {
 function runLayoutRenderEngine() {
     const text = editor.value;
 
-    const lines = text.split('\n');
-    let gutterHTML = '';
-    for (let i = 1; i <= lines.length; i++) {
-        gutterHTML += `<span class="gutter-num">${i}</span>`;
-    }
-    lineGutter.innerHTML = gutterHTML;
+    // Gutter numbers + fold arrows (true file line numbers are preserved across folds).
+    lineGutter.innerHTML = folding.buildGutterHTML(text);
 
     minimapText.textContent = text;
 
@@ -1141,8 +1308,93 @@ function runLayoutRenderEngine() {
     const currentWord = getWordBeforeCursor();
     const markerIndex = cursor - currentWord.length;
 
+    // While regions are folded the visible text no longer aligns with LSP diagnostic
+    // offsets (which track the full document), so suppress squiggles for this paint.
+    const foldsActive = folding.hasFolds();
+    const savedDiagnostics = window.activeDiagnostics;
+    if (foldsActive) window.activeDiagnostics = [];
+
     const backdropHTML = renderSyntaxHighlighting(text, activeName, highlightIndices, markerIndex);
-    editorBackdrop.innerHTML = backdropHTML + (text.endsWith('\n') ? '\n ' : ' ');
+
+    if (foldsActive) window.activeDiagnostics = savedDiagnostics;
+
+    editorBackdrop.innerHTML = folding.decorateBackdrop(backdropHTML) + (text.endsWith('\n') ? '\n ' : ' ');
+
+    updateStatusBar();
+}
+
+/**
+ * Repaint the status-bar cursor / selection readout and the active language label.
+ * Line numbers report true file lines even while regions are folded.
+ */
+function updateStatusBar() {
+    if (!statusCursor) return;
+
+    if (!activeFileHandle) {
+        statusCursor.classList.add('hidden-btn');
+        if (statusLanguage) statusLanguage.classList.add('hidden-btn');
+        return;
+    }
+
+    const text = editor.value;
+    const selStart = editor.selectionStart;
+    const selEnd = editor.selectionEnd;
+
+    const realLine = folding.realLineForDisplayOffset(text, selStart); // 0-based, fold-aware
+    const lineStartIdx = text.lastIndexOf('\n', selStart - 1) + 1;
+    const col = selStart - lineStartIdx;
+
+    let label = `Ln ${realLine + 1}, Col ${col + 1}`;
+    if (selEnd > selStart) {
+        const selLen = selEnd - selStart;
+        const selLines = (text.slice(selStart, selEnd).match(/\n/g) || []).length + 1;
+        label += selLines > 1 ? ` (${selLen} selected · ${selLines} lines)` : ` (${selLen} selected)`;
+    }
+    statusCursor.innerHTML = `<i class="fa-solid fa-location-crosshairs"></i> ${label}`;
+    statusCursor.classList.remove('hidden-btn');
+
+    if (statusLanguage) {
+        const ext = (activeFileHandle.name.split('.').pop() || '').toLowerCase();
+        const langConfig = api.languages.get(ext);
+        const langName = langConfig ? langConfig.name : (ext ? ext.toUpperCase() : 'Plain Text');
+        statusLanguage.innerHTML = `<i class="fa-solid fa-code"></i> ${langName}`;
+        statusLanguage.classList.remove('hidden-btn');
+    }
+}
+
+/**
+ * Jump the caret to a user-supplied 1-based file line. Any folded regions are expanded
+ * first so the target is always reachable, then the line is scrolled into view.
+ */
+async function handleGoToLine() {
+    if (!activeFileHandle) return;
+
+    if (folding.hasFolds()) folding.unfoldAll();
+
+    const lines = editor.value.split('\n');
+    const input = await showPrompt(`Go to line (1–${lines.length}):`, 'Line number');
+    if (input === null || input === '') return;
+
+    const requested = parseInt(input, 10);
+    if (Number.isNaN(requested)) return;
+
+    const target = Math.max(1, Math.min(lines.length, requested));
+    let offset = 0;
+    for (let i = 0; i < target - 1; i++) offset += lines[i].length + 1;
+    // Land after any leading indentation so the caret sits on the first real token.
+    const indent = lines[target - 1].match(/^\s*/)[0].length;
+    offset += indent;
+
+    editor.focus();
+    editor.selectionStart = editor.selectionEnd = offset;
+
+    // Center the target line in the viewport.
+    const cs = getComputedStyle(editor);
+    let lineHeight = parseFloat(cs.lineHeight);
+    if (Number.isNaN(lineHeight)) lineHeight = parseFloat(cs.fontSize) * 1.5;
+    editor.scrollTop = Math.max(0, (target - 1) * lineHeight - editor.clientHeight / 2);
+
+    runLayoutRenderEngine();
 }
 
 function findMatchingBracketIndex(text, pos, char) {
@@ -1236,6 +1488,7 @@ async function handleOpenFolder() {
 
 async function handleOpenFile(fileHandle) {
     hideWelcomePage(); // Instantly close active dynamic welcome screens on open file events
+    folding.clear(); // Fold state is per-buffer; drop it before swapping in another file
     const actualHandle = fileHandle.handle ? fileHandle.handle : fileHandle;
     try {
         if (!openTabs.find(t => fileKey(t) === fileKey(actualHandle))) {
@@ -1371,8 +1624,10 @@ async function handleOpenFile(fileHandle) {
 async function handleSaveFile() {
     if (!activeFileHandle) return;
     try {
-        await saveFileContents(activeFileHandle, editor.value);
-        tabContentsCache.set(fileKey(activeFileHandle), editor.value);
+        // Persist the reconstructed full document so folded regions are written intact.
+        const fullText = folding.getFullText(editor.value);
+        await saveFileContents(activeFileHandle, fullText);
+        tabContentsCache.set(fileKey(activeFileHandle), fullText);
         dirtyFiles.delete(fileKey(activeFileHandle));
         updateTabsUI();
     } catch (err) {
@@ -1743,6 +1998,25 @@ if (prosenseToggle) {
 // Initializing the minimap & ProSense components
 initMinimapScroll(editor, minimapGutter, minimapIndicator);
 initProSense(editor, editorSurfaceBox);
+
+// Initialize code folding — fold state is view-only and never dirties the buffer,
+// so its onChange just repaints and keeps the diagnostics length tracker in sync.
+folding.initFolding(editor, {
+    onChange: () => {
+        window.lastTextLength = editor.value.length;
+        runLayoutRenderEngine();
+    }
+});
+
+// Delegate clicks on the gutter fold arrows to collapse / expand regions.
+if (lineGutter) {
+    lineGutter.addEventListener('click', (e) => {
+        const toggle = e.target.closest('.fold-toggle[data-fold-line]');
+        if (!toggle) return;
+        const line = parseInt(toggle.getAttribute('data-fold-line'), 10);
+        if (!Number.isNaN(line)) folding.toggleFoldAtLine(line);
+    });
+}
 
 // Initialize Terminal Panel Context
 initTerminal(bottomPanel, terminalOutput, terminalInput, terminalPrompt);

@@ -1,8 +1,10 @@
 {
   "id": "web-dev-ide",
   "name": "Web Creator IDE",
+  "description": "A tailored workspace for rapid web layouts, templates, and static preview rendering.",
   "version": "1.0.0",
   "apiVersion": "1.0.0",
   "type": "ide",
-  "main": "index.js"
+  "main": "index.js",
+  "extensionDependencies": ["web-snippets"]
 }

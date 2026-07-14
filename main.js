@@ -341,6 +341,57 @@ ipcMain.handle('scan-plugins', async () => {
 
     const plugins = [];
 
+    // Recognized raster/vector icon container formats an extension or IDE may ship.
+    const ICON_EXTENSIONS = ['.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.avif'];
+
+    // Resolves a web-safe icon path for a plugin: honors an explicit manifest "icon"
+    // field first, then auto-detects a conventional icon.* file inside the plugin folder.
+    const resolveIconPath = (fullPath, relativePath, manifest) => {
+        const toWeb = (abs) => path.relative(__dirname, abs).replace(/\\/g, '/');
+
+        if (manifest && typeof manifest.icon === 'string' && manifest.icon.trim()) {
+            const declared = path.join(fullPath, manifest.icon);
+            if (fs.existsSync(declared)) return toWeb(declared);
+        }
+        for (const ext of ICON_EXTENSIONS) {
+            const candidate = path.join(fullPath, `icon${ext}`);
+            if (fs.existsSync(candidate)) return toWeb(candidate);
+        }
+        return null;
+    };
+
+    const readManifest = (fullPath, folder, expectedType, extra = {}) => {
+        const manifestPath = path.join(fullPath, 'package.json');
+        if (!fs.existsSync(manifestPath)) {
+            return { error: 'Missing package.json file inside plugin directory', _dirName: folder, type: expectedType, ...extra };
+        }
+        try {
+            const content = fs.readFileSync(manifestPath, 'utf8');
+            const manifest = JSON.parse(content);
+
+            // Attach metadata fields needed for runtime execution
+            manifest._localPath = fullPath;
+            manifest._dirName = folder;
+            manifest.type = manifest.type || expectedType;
+
+            // Compute web-safe relative path from the app root directory
+            const relativePath = path.relative(__dirname, fullPath).replace(/\\/g, '/');
+            manifest._relativePath = relativePath;
+
+            // Resolve an optional icon glyph (falls back to a placeholder on the renderer)
+            manifest._iconPath = resolveIconPath(fullPath, relativePath, manifest);
+
+            // Normalize declared extension dependencies to an array of ids
+            if (manifest.extensionDependencies && !Array.isArray(manifest.extensionDependencies)) {
+                manifest.extensionDependencies = [manifest.extensionDependencies];
+            }
+
+            return { ...manifest, ...extra };
+        } catch (err) {
+            return { error: `Failed to parse package.json: ${err.message}`, _dirName: folder, type: expectedType, ...extra };
+        }
+    };
+
     const scanDir = (dirPath, expectedType) => {
         if (!fs.existsSync(dirPath)) return;
         const folders = fs.readdirSync(dirPath);
@@ -348,39 +399,28 @@ ipcMain.handle('scan-plugins', async () => {
         for (const folder of folders) {
             const fullPath = path.join(dirPath, folder);
             const stat = fs.statSync(fullPath);
+            if (!stat.isDirectory()) continue;
 
-            if (stat.isDirectory()) {
-                const manifestPath = path.join(fullPath, 'package.json');
-                if (fs.existsSync(manifestPath)) {
-                    try {
-                        const content = fs.readFileSync(manifestPath, 'utf8');
-                        const manifest = JSON.parse(content);
-                        
-                        // Attach metadata fields needed for runtime execution
-                        manifest._localPath = fullPath;
-                        manifest._dirName = folder;
-                        manifest.type = manifest.type || expectedType;
+            const manifest = readManifest(fullPath, folder, expectedType);
 
-                        // Compute web-safe relative path from the app root directory
-                        const relativePath = path.relative(__dirname, fullPath);
-                        manifest._relativePath = relativePath.replace(/\\/g, '/');
-                        
-                        plugins.push(manifest);
-                    } catch (err) {
-                        plugins.push({
-                            error: `Failed to parse package.json: ${err.message}`,
-                            _dirName: folder,
-                            type: expectedType
+            // IDEs may ship "integrated" extensions inside a nested extensions/ folder.
+            // These are discovered and pushed BEFORE the IDE itself so they activate first.
+            if (expectedType === 'ide' && !manifest.error) {
+                const bundledDir = path.join(fullPath, 'extensions');
+                if (fs.existsSync(bundledDir)) {
+                    for (const sub of fs.readdirSync(bundledDir)) {
+                        const subPath = path.join(bundledDir, sub);
+                        if (!fs.statSync(subPath).isDirectory()) continue;
+                        const bundled = readManifest(subPath, sub, 'extension', {
+                            _bundledBy: manifest.id || folder,
+                            _bundledByName: manifest.name || folder
                         });
+                        plugins.push(bundled);
                     }
-                } else {
-                    plugins.push({
-                        error: 'Missing package.json file inside plugin directory',
-                        _dirName: folder,
-                        type: expectedType
-                    });
                 }
             }
+
+            plugins.push(manifest);
         }
     };
 
