@@ -3,7 +3,7 @@ export function registerPythonRunner(api) {
     const pythonCmd = isWin ? 'python' : 'python3';
 
     try {
-        api.terminal.registerRunner('python', {
+        api.terminal.registerRunner('py', {
             label: 'Python Interpreter',
             run: [
                 { 

@@ -14,7 +14,9 @@ export function renderFileTree(container, items, selectedPath, expandedFolders, 
             const currentItemPath = `${levelPath}/${item.name}`;
             const isSelected = selectedPath && selectedPath === currentItemPath;
             wrapper.className = `tree-item ${item.kind} ${isSelected ? 'selected' : ''}`;
-            wrapper.draggable = true;
+            
+            // FIX 1: Set draggable as a native attribute to ensure compatibility
+            wrapper.setAttribute('draggable', 'true');
             
             const labelDiv = document.createElement('div');
             labelDiv.className = 'tree-label';
@@ -62,6 +64,12 @@ export function renderFileTree(container, items, selectedPath, expandedFolders, 
             // Drag and Drop Binds
             wrapper.addEventListener('dragstart', (e) => {
                 e.stopPropagation();
+                
+                // FIX 2: Set effectAllowed and plain-text data payload. 
+                // Without this, Chromium immediately cancels the drag gesture.
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', item.name);
+                
                 window.draggedItemReference = { item, currentItemPath };
             });
 
@@ -127,7 +135,15 @@ export function renderTabs(container, openTabs, activeFileHandle, dirtyFiles, ac
         // Render File Type Icon
         const iconSpan = document.createElement('span');
         iconSpan.className = 'tab-icon';
-        iconSpan.innerHTML = iconPack.getFileIcon(fileHandle.name);
+        if (fileHandle.isSettings) {
+            iconSpan.innerHTML = '<i class="fa-solid fa-gear" style="color: var(--text-muted);"></i>';
+        } else if (fileHandle.isPluginDetails) {
+            // Render explicit designator icons based on package type
+            const isIde = fileHandle.plugin && fileHandle.plugin.type === 'ide';
+            iconSpan.innerHTML = `<i class="fa-solid ${isIde ? 'fa-laptop-code' : 'fa-puzzle-piece'}" style="color: var(--accent-color);"></i>`;
+        } else {
+            iconSpan.innerHTML = iconPack.getFileIcon(fileHandle.name);
+        }
         tab.appendChild(iconSpan);
 
         // Render File Tab Label

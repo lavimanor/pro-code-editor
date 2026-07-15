@@ -113,10 +113,6 @@ function escapeHTML(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function scrollToBottom() {
-    if (terminalOutput) terminalOutput.scrollTop = terminalOutput.scrollHeight;
-}
-
 export function appendOutputChunk(data, stream = 'stdout') {
     if (!terminalOutput) return;
 
@@ -137,7 +133,10 @@ export function appendOutputChunk(data, stream = 'stdout') {
     span.textContent = data;
     terminalOutput.appendChild(span);
 
-    ensureTerminalOpen();
+    // FIXED: Only auto-reveal terminal on real stderr warnings or active stdout execution
+    if (stream === 'stderr' || (stream === 'stdout' && runActive)) {
+        ensureTerminalOpen();
+    }
     scrollToBottom();
 }
 
@@ -165,6 +164,17 @@ export function printToTerminal(text, type = 'system') {
     } else {
         appendCommandLine(text);
     }
-    ensureTerminalOpen();
+    // FIXED: Do not force terminal panel open on quiet background system notifications
+    if (type !== 'system') {
+        ensureTerminalOpen();
+    }
     scrollToBottom();
+}
+
+// FIXED: Corrected the target element from the static output div to the scrollable container div
+function scrollToBottom() {
+    const container = document.getElementById('terminal-container');
+    if (container) {
+        container.scrollTop = container.scrollHeight;
+    }
 }

@@ -29,6 +29,12 @@ const expandedFolders = new Set();
 let activeIconPack = localStorage.getItem('editor-icon-pack-preset') || 'material';
 const tabContentsCache = new Map();
 
+const settingsTabHandle = {
+    name: 'Settings',
+    path: 'virtual://settings',
+    isSettings: true
+};
+
 // Electron IPC bridge
 let ipcRenderer = null;
 
@@ -81,6 +87,122 @@ const btnRunCode = document.getElementById('btn-run-code');
 
 // Toggle Autocomplete Element
 const prosenseToggle = document.getElementById('prosense-toggle');
+
+window.convertSelectToCustom = function(selectEl, getIconHTMLFn = null) {
+    // Prevent double-binding if already converted
+    if (!selectEl || selectEl.style.display === 'none' || selectEl.nextElementSibling?.classList.contains('custom-dropdown-container')) {
+        return;
+    }
+
+    const container = document.createElement('div');
+    container.className = 'custom-dropdown-container';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'custom-dropdown-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    const labelWrap = document.createElement('div');
+    labelWrap.className = 'custom-dropdown-label-wrap';
+
+    const label = document.createElement('span');
+    label.className = 'custom-dropdown-label';
+    labelWrap.appendChild(label);
+    trigger.appendChild(labelWrap);
+
+    const chevron = document.createElement('i');
+    chevron.className = 'fa-solid fa-chevron-down custom-dropdown-chevron';
+    trigger.appendChild(chevron);
+
+    const menu = document.createElement('div');
+    menu.className = 'custom-dropdown-menu';
+    menu.setAttribute('role', 'listbox');
+
+    container.appendChild(trigger);
+    container.appendChild(menu);
+
+    // Hide native select element and insert our custom markup
+    selectEl.style.display = 'none';
+    selectEl.parentNode.insertBefore(container, selectEl.nextSibling);
+
+    const updateTrigger = () => {
+        const selectedOpt = selectEl.options[selectEl.selectedIndex];
+        if (!selectedOpt) return;
+
+        // Clear old icon
+        const existingIcon = labelWrap.querySelector('.custom-dropdown-icon');
+        if (existingIcon) existingIcon.remove();
+
+        if (typeof getIconHTMLFn === 'function') {
+            const iconHTML = getIconHTMLFn(selectedOpt.value, selectedOpt.text);
+            if (iconHTML) {
+                const temp = document.createElement('span');
+                temp.className = 'custom-dropdown-icon';
+                temp.innerHTML = iconHTML;
+                labelWrap.insertBefore(temp, label);
+            }
+        }
+        label.textContent = selectedOpt.text;
+    };
+
+    const renderMenu = () => {
+        menu.innerHTML = '';
+        Array.from(selectEl.options).forEach((opt, idx) => {
+            const item = document.createElement('div');
+            item.className = 'custom-dropdown-option' + (idx === selectEl.selectedIndex ? ' active' : '');
+            item.setAttribute('role', 'option');
+            item.setAttribute('aria-selected', String(idx === selectEl.selectedIndex));
+
+            if (typeof getIconHTMLFn === 'function') {
+                const iconHTML = getIconHTMLFn(opt.value, opt.text);
+                if (iconHTML) {
+                    const temp = document.createElement('span');
+                    temp.className = 'custom-dropdown-icon';
+                    temp.innerHTML = iconHTML;
+                    item.appendChild(temp);
+                }
+            }
+
+            const span = document.createElement('span');
+            span.textContent = opt.text;
+            item.appendChild(span);
+
+            item.addEventListener('click', () => {
+                selectEl.selectedIndex = idx;
+                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                updateTrigger();
+                closeMenu();
+            });
+
+            menu.appendChild(item);
+        });
+    };
+
+    const closeMenu = () => {
+        container.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+    };
+
+    trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const willOpen = !container.classList.contains('open');
+        // Close all other open custom dropdowns first
+        document.querySelectorAll('.custom-dropdown-container.open').forEach(el => {
+            if (el !== container) el.classList.remove('open');
+        });
+        container.classList.toggle('open', willOpen);
+        trigger.setAttribute('aria-expanded', String(willOpen));
+        if (willOpen) renderMenu();
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!container.contains(e.target)) closeMenu();
+    });
+
+    selectEl.addEventListener('change', updateTrigger);
+    updateTrigger();
+};
 
 /**
  * Sidebar Panel Switching Engine
@@ -258,7 +380,7 @@ window.renderIdeSelector = () => {
     // Render the trigger to reflect the current selection.
     const activeOption = options.find(o => o.value === activeValue) || options[0];
     trigger.innerHTML = '';
-    trigger.appendChild(makeIcon(iconFor(activeOption.value), 16));
+    trigger.appendChild(makeIcon(iconFor(activeOption.value), 20)); // Increased from 16
     const label = document.createElement('span');
     label.className = 'ide-selector-label';
     label.textContent = activeOption.name;
@@ -274,7 +396,7 @@ window.renderIdeSelector = () => {
         item.className = 'ide-selector-option' + (opt.value === activeValue ? ' active' : '');
         item.setAttribute('role', 'option');
         item.setAttribute('aria-selected', String(opt.value === activeValue));
-        item.appendChild(makeIcon(iconFor(opt.value), 18));
+        item.appendChild(makeIcon(iconFor(opt.value), 22)); // Increased from 18
         const optLabel = document.createElement('span');
         optLabel.textContent = opt.name;
         item.appendChild(optLabel);
@@ -467,6 +589,9 @@ window.renderDynamicSettings = () => {
     document.querySelectorAll('.dynamic-setting-item').forEach(el => el.remove());
 
     api.views.customSettings.forEach((config, id) => {
+        // Skip plugin-specific configurations so they only render on their own Details page
+        if (config.pluginId) return;
+
         const div = document.createElement('div');
         div.className = 'setting-item dynamic-setting-item';
 
@@ -483,6 +608,7 @@ window.renderDynamicSettings = () => {
             else if (config.type === 'number') currentValue = Number(currentValue);
         }
 
+        // (Inside window.renderDynamicSettings in js/app.js)
         let input;
         if (config.type === 'select') {
             input = document.createElement('select');
@@ -493,6 +619,10 @@ window.renderDynamicSettings = () => {
                 if (optVal === currentValue) opt.selected = true;
                 input.appendChild(opt);
             });
+            // Convert to custom component once inserted into the DOM
+            setTimeout(() => {
+                window.convertSelectToCustom(input, () => '<i class="fa-solid fa-sliders" style="color: var(--accent-color);"></i>');
+            }, 0);
         } else if (config.type === 'checkbox') {
             div.classList.add('flex-row');
             label.classList.add('flex-grow');
@@ -926,8 +1056,17 @@ iconSelector.addEventListener('change', (e) => {
 
 // Bind activity switches
 actExplorer.addEventListener('click', () => switchSidebarView('explorer'));
-actSettings.addEventListener('click', toggleSettingsPanel);
-closeSettingsBtn.addEventListener('click', toggleSettingsPanel);
+actSettings.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSettingsPanel();
+});
+
+closeSettingsBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSettingsPanel();
+});
 
 editor.addEventListener('input', () => {
     if (activeFileHandle && !dirtyFiles.has(fileKey(activeFileHandle))) {
@@ -1244,7 +1383,7 @@ editor.addEventListener('keydown', (e) => {
 window.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        if (activeFileHandle) handleSaveFile();
+        if (activeFileHandle && !activeFileHandle.isSettings) handleSaveFile();
     }
     if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
@@ -1268,9 +1407,24 @@ if (statusCursor) {
 }
 
 function toggleSettingsPanel() {
-    settingsPanel.classList.toggle('hidden');
-    actSettings.classList.toggle('active', !settingsPanel.classList.contains('hidden'));
+    const key = fileKey(settingsTabHandle);
+    const isActive = activeFileHandle && fileKey(activeFileHandle) === key;
+    if (isActive) {
+        handleCloseTab(settingsTabHandle);
+    } else {
+        openSettingsTab();
+    }
 }
+
+function openSettingsTab() {
+    const key = fileKey(settingsTabHandle);
+    if (!openTabs.find(t => fileKey(t) === key)) {
+        openTabs.push(settingsTabHandle);
+    }
+    handleOpenFile(settingsTabHandle);
+}
+
+
 
 /**
  * Updates line numbers and coordinates the editor backdrop overlay.
@@ -1331,6 +1485,12 @@ function updateStatusBar() {
     if (!statusCursor) return;
 
     if (!activeFileHandle) {
+        statusCursor.classList.add('hidden-btn');
+        if (statusLanguage) statusLanguage.classList.add('hidden-btn');
+        return;
+    }
+
+    if (activeFileHandle.isSettings) {
         statusCursor.classList.add('hidden-btn');
         if (statusLanguage) statusLanguage.classList.add('hidden-btn');
         return;
@@ -1432,7 +1592,8 @@ async function refreshExplorer() {
     if (!rootDirectoryHandle) return;
 
     let selectedPath = null;
-    if (selectedHandle) {
+    // Guard: Skip resolving paths for virtual settings handles
+    if (selectedHandle && !selectedHandle.isSettings) {
         if (selectedHandle === rootDirectoryHandle) {
             selectedPath = 'root';
         } else {
@@ -1487,9 +1648,71 @@ async function handleOpenFolder() {
 }
 
 async function handleOpenFile(fileHandle) {
-    hideWelcomePage(); // Instantly close active dynamic welcome screens on open file events
-    folding.clear(); // Fold state is per-buffer; drop it before swapping in another file
+    hideWelcomePage();
+    folding.clear();
     const actualHandle = fileHandle.handle ? fileHandle.handle : fileHandle;
+
+    if (actualHandle.isSettings) {
+        activeFileHandle = actualHandle;
+        selectedHandle = actualHandle;
+        
+        // Hide standard file editor wrappers
+        document.getElementById('line-gutter').style.display = 'none';
+        document.getElementById('editor-surface-box').style.display = 'none';
+        document.getElementById('minimap-gutter').style.display = 'none';
+        
+        const settingsPanel = document.getElementById('settings-panel');
+        settingsPanel.classList.remove('hidden');
+        settingsPanel.style.display = 'flex';
+        
+        filePathDisplay.textContent = "Editor / Settings";
+        
+        updateGoLiveVisibility('');
+        updateRunButtonVisibility('');
+        updateTabsUI();
+        await refreshExplorer();
+        return;
+    }
+
+    if (actualHandle.isPluginDetails) {
+        activeFileHandle = actualHandle;
+        selectedHandle = actualHandle;
+
+        // Hide standard file editor wrappers
+        document.getElementById('line-gutter').style.display = 'none';
+        document.getElementById('editor-surface-box').style.display = 'none';
+        document.getElementById('minimap-gutter').style.display = 'none';
+        document.getElementById('settings-panel').style.display = 'none';
+
+        // Reveal and render Details Viewport
+        const detailsPanel = document.getElementById('plugin-details-panel');
+        detailsPanel.classList.remove('hidden');
+        detailsPanel.style.display = 'flex';
+
+        renderPluginDetailsPage(detailsPanel, actualHandle.plugin);
+
+        filePathDisplay.textContent = `${actualHandle.plugin.type === 'ide' ? 'IDE' : 'Extension'} / ${actualHandle.plugin.name}`;
+        updateGoLiveVisibility('');
+        updateRunButtonVisibility('');
+        updateTabsUI();
+        await refreshExplorer();
+        return;
+    }
+
+    // Standard file tab: Ensure standard editor viewports are visible
+    document.getElementById('line-gutter').style.display = 'flex';
+    document.getElementById('editor-surface-box').style.display = 'block';
+    document.getElementById('minimap-gutter').style.display = 'block';
+    
+    const settingsPanel = document.getElementById('settings-panel');
+    settingsPanel.classList.add('hidden');
+    settingsPanel.style.display = 'none';
+
+    // Hide Details Viewport
+    const detailsPanel = document.getElementById('plugin-details-panel');
+    detailsPanel.classList.add('hidden');
+    detailsPanel.style.display = 'none';
+
     try {
         if (!openTabs.find(t => fileKey(t) === fileKey(actualHandle))) {
             openTabs.push(actualHandle);
@@ -1536,11 +1759,8 @@ async function handleOpenFile(fileHandle) {
 
         if (lspEntry && rootDirectoryHandle) {
             const client = lspEntry.client;
-            console.log(`[LSP Debug] Triggering client.start() for "${lspEntry.command}"...`);
-            
-            // Start the Language Server process if not already active
+            // Removed noisy console.log statements
             client.start(lspEntry.command, lspEntry.args, rootDirectoryHandle.path, lspEntry.initializationOptions).then((started) => {
-                console.log(`[LSP Debug] client.start() resolved with status:`, started);
                 if (started) {
                     // Resolve official LSP Language ID mappings
                     const lspLangId = (fileExt === 'js' || fileExt === 'mjs' || fileExt === 'cjs') ? 'javascript' :
@@ -1559,7 +1779,6 @@ async function handleOpenFile(fileHandle) {
                             const count = params.diagnostics.length;
                             const cleanPath = uriToPath(params.uri).toLowerCase();
 
-                            // Retrieve the actual current text of this file from the cache (Added Fix)
                             let fileText = null;
                             for (const [key, text] of tabContentsCache.entries()) {
                                 if (key.toLowerCase() === cleanPath) {
@@ -1567,26 +1786,22 @@ async function handleOpenFile(fileHandle) {
                                     break;
                                 }
                             }
-                            // Fall back to editor.value if the cache does not contain this file
                             if (!fileText) {
                                 fileText = editor.value;
                             }
                             
-                            // Map incoming diagnostics ranges to absolute string offsets
                             const mappedDiags = params.diagnostics.map(diag => {
                                 let startOffset = lspPositionToOffset(fileText, diag.range.start.line, diag.range.start.character);
                                 let endOffset = lspPositionToOffset(fileText, diag.range.end.line, diag.range.end.character);
                                 
-                                // Fix zero-width or trailing out-of-bound diagnostic ranges
                                 if (startOffset === endOffset) {
                                     if (startOffset > 0) {
-                                        startOffset = startOffset - 1; // Highlight the preceding token character
+                                        startOffset = startOffset - 1;
                                     } else {
                                         endOffset = startOffset + 1;
                                     }
                                 }
 
-                                // Clamp offsets so they are always safe and fit within current text boundaries
                                 startOffset = Math.max(0, Math.min(fileText.length - 1, startOffset));
                                 endOffset = Math.max(1, Math.min(fileText.length, endOffset));
 
@@ -1598,19 +1813,20 @@ async function handleOpenFile(fileHandle) {
                                 };
                             });
                             
-                            // Cache the mapped diagnostics using the standardized file path
                             window.activeDiagnosticsCache.set(cleanPath, mappedDiags);
 
-                            // Only update active rendering array and repaint if it belongs to the currently active file (Added Fix)
                             const currentActivePath = activeFileHandle && activeFileHandle.path ? activeFileHandle.path.toLowerCase() : '';
                             if (cleanPath === currentActivePath) {
                                 window.activeDiagnostics = mappedDiags;
                                 runLayoutRenderEngine();
                             }
 
+                            // Completely commented out to remove LSP terminal message flood
+                            /*
                             if (count > 0) {
                                 printToTerminal(`[LSP Diagnostics] "${activeFileHandle.name}" has ${count} warning/error nodes reported by language server.`, 'system');
                             }
+                            */
                         });
                     }
                 }
@@ -1662,35 +1878,89 @@ async function handleCreateFolder() {
 
 async function handleMoveItem(sourceItem, targetDirectoryHandle) {
     try {
-        if (sourceItem.kind === 'file') {
-            const fileData = await readFileContents(sourceItem.handle);
-            const newFileHandle = await targetDirectoryHandle.getFileHandle(sourceItem.name, { create: true });
-            await saveFileContents(newFileHandle, fileData);
+        const isElectronApp = typeof window !== 'undefined' && window.process && window.process.type;
+        
+        if (isElectronApp) {
+            // Electron Direct High-Performance Move:
+            // Uses Node's fs.renameSync to relocate files and folders of any size 
+            // instantly, safely, and recursively!
+            const fsNode = window.require('fs');
+            const pathNode = window.require('path');
             
-            const sourceKey = fileKey(sourceItem.handle);
-            const tabIdx = openTabs.findIndex(t => fileKey(t) === sourceKey);
-            if (tabIdx !== -1) openTabs[tabIdx] = newFileHandle;
+            const oldPath = sourceItem.handle.path;
+            const newPath = pathNode.join(targetDirectoryHandle.path, sourceItem.name);
+            
+            // Check if source and destination are identical
+            if (oldPath === newPath) return;
 
-            if (tabContentsCache.has(sourceKey)) {
-                tabContentsCache.set(fileKey(newFileHandle), tabContentsCache.get(sourceKey));
-                tabContentsCache.delete(sourceKey);
-            }
-            if (dirtyFiles.has(sourceKey)) {
-                dirtyFiles.delete(sourceKey);
-                dirtyFiles.add(fileKey(newFileHandle));
-            }
-            if (activeFileHandle && fileKey(activeFileHandle) === sourceKey) {
-                activeFileHandle = newFileHandle;
-                selectedHandle = newFileHandle;
+            fsNode.renameSync(oldPath, newPath);
+
+            // If a moved file was currently open in the tabs, update its file handle reference
+            if (sourceItem.kind === 'file') {
+                const sourceKey = fileKey(sourceItem.handle);
+                const newHandle = {
+                    kind: 'file',
+                    name: sourceItem.name,
+                    path: newPath,
+                    isElectronMock: true,
+                    getFile: async () => ({
+                        text: async () => fsNode.readFileSync(newPath, 'utf8')
+                    })
+                };
+
+                const tabIdx = openTabs.findIndex(t => fileKey(t) === sourceKey);
+                if (tabIdx !== -1) openTabs[tabIdx] = newHandle;
+
+                if (tabContentsCache.has(sourceKey)) {
+                    tabContentsCache.set(fileKey(newHandle), tabContentsCache.get(sourceKey));
+                    tabContentsCache.delete(sourceKey);
+                }
+                if (dirtyFiles.has(sourceKey)) {
+                    dirtyFiles.delete(sourceKey);
+                    dirtyFiles.add(fileKey(newHandle));
+                }
+                if (activeFileHandle && fileKey(activeFileHandle) === sourceKey) {
+                    activeFileHandle = newHandle;
+                    selectedHandle = newHandle;
+                }
             }
         } else {
-            await targetDirectoryHandle.getDirectoryHandle(sourceItem.name, { create: true });
+            // Web File System API Fallback:
+            // Uses our abstract fs-handler utility methods correctly instead of bypassing them.
+            if (sourceItem.kind === 'file') {
+                const fileData = await readFileContents(sourceItem.handle);
+                const newFileHandle = await createFileHandle(targetDirectoryHandle, sourceItem.name);
+                await saveFileContents(newFileHandle, fileData);
+                
+                const sourceKey = fileKey(sourceItem.handle);
+                const tabIdx = openTabs.findIndex(t => fileKey(t) === sourceKey);
+                if (tabIdx !== -1) openTabs[tabIdx] = newFileHandle;
+
+                if (tabContentsCache.has(sourceKey)) {
+                    tabContentsCache.set(fileKey(newFileHandle), tabContentsCache.get(sourceKey));
+                    tabContentsCache.delete(sourceKey);
+                }
+                if (dirtyFiles.has(sourceKey)) {
+                    dirtyFiles.delete(sourceKey);
+                    dirtyFiles.add(fileKey(newFileHandle));
+                }
+                if (activeFileHandle && fileKey(activeFileHandle) === sourceKey) {
+                    activeFileHandle = newFileHandle;
+                    selectedHandle = newFileHandle;
+                }
+            } else {
+                // Creates folder on the web 
+                await createDirectoryHandle(targetDirectoryHandle, sourceItem.name);
+            }
+            // Safely delete the source file/directory using our abstraction wrapper
+            await removeEntryHandle(sourceItem.parent, sourceItem.name);
         }
-        await sourceItem.parent.removeEntry(sourceItem.name, { recursive: true });
+        
         await refreshExplorer();
         updateTabsUI();
     } catch (err) {
-        alert('System drag execution parameter lock error.');
+        console.error('Drag movement exception:', err);
+        alert(`Move operation failed: ${err.message}`);
     }
 }
 
@@ -1716,6 +1986,20 @@ function handleCloseTab(fileHandle) {
             filePathDisplay.textContent = rootDirectoryHandle ? "Workspace: " + rootDirectoryHandle.name : 'Workspace Closed';
             updateGoLiveVisibility('');
             updateRunButtonVisibility('');
+            
+            // Hide settings panel
+            const settingsPanel = document.getElementById('settings-panel');
+            settingsPanel.classList.add('hidden');
+            settingsPanel.style.display = 'none';
+            
+            const detailsPanel = document.getElementById('plugin-details-panel');
+            detailsPanel.classList.add('hidden');
+            detailsPanel.style.display = 'none';
+
+            document.getElementById('line-gutter').style.display = 'flex';
+            document.getElementById('editor-surface-box').style.display = 'block';
+            document.getElementById('minimap-gutter').style.display = 'block';
+            
             runLayoutRenderEngine();
 
             // Reactivate IDE welcome splash view on close tabs events if no open records remain
@@ -1727,6 +2011,16 @@ function handleCloseTab(fileHandle) {
     } else if (openTabs.length === 0) {
         updateGoLiveVisibility('');
         updateRunButtonVisibility('');
+        
+        // Hide settings panel
+        const settingsPanel = document.getElementById('settings-panel');
+        settingsPanel.classList.add('hidden');
+        settingsPanel.style.display = 'none';
+
+        // FIX: Restore standard editor layout viewports so the workspace is visible
+        document.getElementById('line-gutter').style.display = 'flex';
+        document.getElementById('editor-surface-box').style.display = 'block';
+        document.getElementById('minimap-gutter').style.display = 'block';
 
         const activeIde = api.workspace.getActiveIDE();
         if (activeIde && typeof activeIde.getWelcomePageHTML === 'function') {
@@ -1865,6 +2159,7 @@ function showCustomModal(config) {
             label.textContent = inputConfig.label;
             itemDiv.appendChild(label);
 
+            // (Inside showCustomModal in js/app.js)
             let input;
             if (inputConfig.type === 'select') {
                 input = document.createElement('select');
@@ -1883,6 +2178,10 @@ function showCustomModal(config) {
                     if (optVal === inputConfig.defaultValue) opt.selected = true;
                     input.appendChild(opt);
                 });
+                // Convert to custom component once inserted into the DOM
+                setTimeout(() => {
+                    window.convertSelectToCustom(input, () => '<i class="fa-solid fa-sliders" style="color: var(--accent-color);"></i>');
+                }, 0);
             } else if (inputConfig.type === 'checkbox') {
                 itemDiv.style.flexDirection = 'row';
                 itemDiv.style.alignItems = 'center';
@@ -2049,7 +2348,7 @@ async function bootEditor() {
         centerTitle.appendChild(ideToolbarContainer);
     }
 
-    // Setup and activate Plugins manager sidebar tab panel using our Views API (New Addition)
+    // Setup and activate Plugins manager sidebar tab panel using our Views API
     api.views.registerSidebarPanel('plugins-manager', {
         iconClass: 'fa-solid fa-puzzle-piece',
         title: 'Plugins',
@@ -2079,7 +2378,14 @@ async function bootEditor() {
     // Dynamically render UI options based on loaded registries
     renderThemeSelector(themeSelector);
     renderIconSelector(iconSelector);
-    window.renderDiagnosticStyleSelector(); // Added Fix
+    window.renderDiagnosticStyleSelector();
+
+    // Map all standard select elements to custom dropdown components on launch
+    window.convertSelectToCustom(themeSelector, () => '<i class="fa-solid fa-palette" style="color: var(--accent-color);"></i>');
+    window.convertSelectToCustom(iconSelector, () => '<i class="fa-regular fa-folder-open" style="color: var(--accent-color);"></i>');
+    window.convertSelectToCustom(document.getElementById('diagnostic-style-selector'), () => '<i class="fa-solid fa-triangle-exclamation" style="color: var(--accent-color);"></i>');
+    window.convertSelectToCustom(document.getElementById('run-mode-selector'), () => '<i class="fa-solid fa-terminal" style="color: var(--accent-color);"></i>');
+    window.convertSelectToCustom(document.getElementById('snippet-lang'), () => '<i class="fa-solid fa-code" style="color: var(--accent-color);"></i>');
     if (typeof window.renderDynamicSidebarPanels === 'function') window.renderDynamicSidebarPanels();
     if (typeof window.renderDynamicSettings === 'function') window.renderDynamicSettings();
 
@@ -2091,9 +2397,13 @@ async function bootEditor() {
     // Apply cached icon preference
     iconSelector.value = activeIconPack;
 
-    // Set up interactive window splitting layout controls (New Addition)
+    // Set up interactive window splitting layout controls
     initLayoutResizing();
     
+    // Ensure terminal configurations and run settings load on launch
+    if (isElectronApp && typeof window.updateRunnableExtensions === 'function') {
+        await window.updateRunnableExtensions();
+    }
 }
 
 /**
@@ -2481,6 +2791,16 @@ editor.addEventListener('mouseleave', () => {
 });
 
 editor.addEventListener('scroll', () => {
+    editorBackdrop.scrollTop = editor.scrollTop;
+    editorBackdrop.scrollLeft = editor.scrollLeft;
+    lineGutter.scrollTop = editor.scrollTop;
+
+    const viewportRatio = editor.scrollTop / (editor.scrollHeight - editor.clientHeight || 1);
+    const maxMinimapScroll = minimapGutter.clientHeight - minimapIndicator.clientHeight;
+    minimapIndicator.style.top = `${viewportRatio * maxMinimapScroll}px`;
+
+    // FIXED: Hide open autocomplete lists and hovers on scroll to prevent static floating desyncs
+    hideProSense();
     hideHoverPopup();
 });
 
@@ -2493,3 +2813,191 @@ document.addEventListener('keydown', (e) => {
         }
     }
 });
+
+// Enable the empty sidebar area to accept drags and drops back to the root workspace level
+fileTreeContainer.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+});
+
+fileTreeContainer.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const dragContext = window.draggedItemReference;
+    if (!dragContext) return;
+    
+    // If dropping onto empty space in the file tree, move the item to the root folder
+    if (rootDirectoryHandle) {
+        // Prevent moving a root-level item onto the root itself
+        if (dragContext.item.parent && dragContext.item.parent.path === rootDirectoryHandle.path) {
+            return;
+        }
+        await handleMoveItem(dragContext.item, rootDirectoryHandle);
+    }
+});
+
+window.openPluginDetailsTab = (plugin) => {
+    const handle = {
+        name: plugin.name,
+        path: `virtual://plugin/${plugin.id}`,
+        isPluginDetails: true,
+        plugin: plugin
+    };
+    const key = fileKey(handle);
+    if (!openTabs.find(t => fileKey(t) === key)) {
+        openTabs.push(handle);
+    }
+    handleOpenFile(handle);
+};
+
+function renderPluginDetailsPage(container, plugin) {
+    container.innerHTML = '';
+
+    const placeholder = `assets/placeholder-${plugin.type === 'ide' ? 'ide' : 'extension'}.svg`;
+    const iconUrl = plugin._iconPath || placeholder;
+
+    const header = document.createElement('div');
+    header.className = 'plugin-details-header';
+    header.innerHTML = `
+        <img class="plugin-details-icon" src="${iconUrl}" onerror="if(this.src.indexOf('${placeholder}')===-1)this.src='${placeholder}';" />
+        <div class="plugin-details-info">
+            <div class="plugin-details-title-row">
+                <span class="plugin-details-title">${escapeHTML(plugin.name)}</span>
+                <span class="plugin-details-version">v${escapeHTML(plugin.version)}</span>
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">ID: <strong>${escapeHTML(plugin.id)}</strong></div>
+            <div class="plugin-details-meta-row">
+                <span><i class="fa-solid ${plugin.type === 'ide' ? 'fa-laptop-code' : 'fa-puzzle-piece'}"></i> ${plugin.type.toUpperCase()}</span>
+                <span><i class="fa-solid fa-code"></i> API: v${escapeHTML(plugin.apiVersion)}</span>
+            </div>
+        </div>
+    `;
+    container.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'plugin-details-body';
+
+    // 1. Description Section
+    const descSec = document.createElement('div');
+    descSec.className = 'plugin-details-section';
+    descSec.innerHTML = `
+        <div class="plugin-details-section-title">Description</div>
+        <p style="font-size: 12px; line-height: 1.5; color: var(--text-muted);">${escapeHTML(plugin.description || 'No description provided.')}</p>
+    `;
+    body.appendChild(descSec);
+
+    // 2. Settings Section
+    const settingsSec = document.createElement('div');
+    settingsSec.className = 'plugin-details-section';
+    settingsSec.innerHTML = `<div class="plugin-details-section-title">Configuration Settings</div>`;
+
+    // Gather settings explicitly mapped to this plugin ID
+    const pluginSettings = Array.from(api.views.customSettings.entries())
+        .filter(([id, config]) => config.pluginId === plugin.id || id.startsWith(`${plugin.id}-`));
+
+    if (pluginSettings.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.color = 'var(--text-muted)';
+        empty.style.fontSize = '12px';
+        empty.style.fontStyle = 'italic';
+        empty.textContent = 'This plugin does not contribute any configurable setting options.';
+        settingsSec.appendChild(empty);
+    } else {
+        pluginSettings.forEach(([id, config]) => {
+            const card = document.createElement('div');
+            card.className = 'plugin-details-setting-card';
+
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.justifyContent = 'space-between';
+            row.style.alignItems = 'center';
+            row.style.gap = '12px';
+
+            const label = document.createElement('span');
+            label.style.fontSize = '12px';
+            label.style.fontWeight = '600';
+            label.textContent = config.label;
+            row.appendChild(label);
+
+            const cacheKey = `setting-pref-${id}`;
+            let currentValue = localStorage.getItem(cacheKey);
+            if (currentValue === null) {
+                currentValue = config.defaultValue;
+            } else {
+                if (config.type === 'checkbox') currentValue = (currentValue === 'true');
+                else if (config.type === 'number') currentValue = Number(currentValue);
+            }
+
+            // (Inside renderPluginDetailsPage in js/app.js)
+            let input;
+            if (config.type === 'select') {
+                input = document.createElement('select');
+                input.style.backgroundColor = 'var(--bg-dark)';
+                input.style.border = '1px solid var(--border-color)';
+                input.style.color = 'var(--text-main)';
+                input.style.padding = '4px 8px';
+                input.style.borderRadius = '4px';
+                input.style.fontSize = '12px';
+                input.style.outline = 'none';
+
+                (config.options || []).forEach(optVal => {
+                    const opt = document.createElement('option');
+                    opt.value = optVal;
+                    opt.textContent = optVal;
+                    if (optVal === currentValue) opt.selected = true;
+                    input.appendChild(opt);
+                });
+                // Convert to custom component once inserted into the DOM
+                setTimeout(() => {
+                    window.convertSelectToCustom(input, () => '<i class="fa-solid fa-sliders" style="color: var(--accent-color);"></i>');
+                }, 0);
+            } else if (config.type === 'checkbox') {
+                input = document.createElement('input');
+                input.type = 'checkbox';
+                input.style.width = '16px';
+                input.style.height = '16px';
+                input.style.cursor = 'pointer';
+                input.checked = !!currentValue;
+            } else {
+                input = document.createElement('input');
+                input.type = config.type || 'text';
+                input.value = currentValue;
+                input.style.backgroundColor = 'var(--bg-dark)';
+                input.style.border = '1px solid var(--border-color)';
+                input.style.color = 'var(--text-main)';
+                input.style.padding = '6px';
+                input.style.borderRadius = '4px';
+                input.style.fontSize = '12px';
+                input.style.outline = 'none';
+            }
+
+            input.addEventListener('change', (e) => {
+                let val = config.type === 'checkbox' ? e.target.checked : e.target.value;
+                localStorage.setItem(cacheKey, val);
+                try {
+                    config.onChange(val);
+                } catch (err) {
+                    console.error(`Error in setting ${id} onChange:`, err);
+                }
+            });
+
+            row.appendChild(input);
+            card.appendChild(row);
+
+            if (config.description) {
+                const tip = document.createElement('div');
+                tip.style.fontSize = '11px';
+                tip.style.color = 'var(--text-muted)';
+                tip.style.marginTop = '4px';
+                tip.textContent = config.description;
+                card.appendChild(tip);
+            }
+
+            settingsSec.appendChild(card);
+        });
+    }
+
+    body.appendChild(settingsSec);
+    container.appendChild(body);
+}

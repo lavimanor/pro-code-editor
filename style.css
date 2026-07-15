@@ -468,14 +468,22 @@ button:disabled {
     color: var(--text-muted);
     user-select: none;
     overflow: hidden;
+    
+    /* Force rows to stack vertically as a column (without !important so JS can hide it) */
+    display: flex;
+    flex-direction: column;
 }
 
 .gutter-num {
-    display: flex;
-    align-items: center;
     height: 22px;
     padding: 0 8px 0 4px;
-    box-sizing: border-box;
+    box-sizing: border-box !important;
+    
+    /* FIX: Keep the arrow and the line number horizontally next to each other */
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    width: 100% !important;
 }
 
 .gutter-num.has-fold {
@@ -843,25 +851,55 @@ button:disabled {
 }
 
 #settings-panel {
-    position: absolute;
-    top: 50px;
-    right: 30px;
-    width: 340px;
-    background-color: var(--bg-sidebar);
-    border: 1px solid var(--border-color);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-    border-radius: 6px;
-    display: flex;
+    flex: 1;
+    height: 100%;
+    width: 100%;
+    background-color: var(--bg-dark); /* Blends perfectly with editor background */
+    color: var(--text-main);
+    display: none;
     flex-direction: column;
     z-index: 100;
-    color: var(--text-main);
+    overflow-y: auto; /* Enables native scroll within the tab area */
 }
 
-#settings-panel.hidden { display: none !important; }
-.settings-header { padding: 14px 16px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
-.settings-header h3 { font-size: 14px; font-weight: 600; }
-#close-settings-btn { background: none; border: none; font-size: 18px; color: var(--text-muted); cursor: pointer;}
-.settings-body { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+#settings-panel.hidden {
+    display: none !important;
+}
+
+.settings-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    max-width: 800px;
+    width: 100%;
+    margin: 0 auto; /* Centers content nicely on wide screens */
+}
+
+.settings-header h3 {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#close-settings-btn {
+    background: none;
+    border: none;
+    font-size: 18px;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.settings-body {
+    padding: 24px;
+    max-width: 800px;
+    width: 100%;
+    margin: 0 auto; /* Centers content nicely on wide screens */
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: visible; /* Parent handles the scrollbars */
+}
 .setting-item { display: flex; flex-direction: column; gap: 6px; }
 .setting-item label { font-size: 12px; color: var(--text-muted); }
 .setting-item select { background-color: var(--bg-dark); border: 1px solid var(--border-color); color: var(--text-main); padding: 6px; border-radius: 4px; outline: none; }
@@ -1274,6 +1312,45 @@ body.layout-resizing .resizer-h.dragging {
 .syntax-number { color: var(--syntax-number); }
 .syntax-punctuation { color: var(--syntax-punctuation); }
 .syntax-bracket { color: var(--syntax-bracket, #ffd700); font-weight: 500; }
+/* ---- Markdown Syntax Highlight Styling Classes ---- */
+.syntax-md-header { 
+    color: var(--syntax-md-header); 
+    font-weight: bold; 
+}
+.syntax-md-list { 
+    color: var(--syntax-md-list); 
+}
+.syntax-md-blockquote { 
+    color: var(--syntax-md-blockquote); 
+    font-style: italic; 
+}
+.syntax-md-codeblock-fence { 
+    color: var(--syntax-md-codeblock-fence); 
+    font-family: var(--font-code);
+}
+.syntax-md-codeblock-content { 
+    color: var(--syntax-md-codeblock-content); 
+    font-family: var(--font-code);
+}
+.syntax-md-bold { 
+    color: var(--syntax-md-bold); 
+    font-weight: bold; 
+}
+.syntax-md-italic { 
+    color: var(--syntax-md-italic); 
+    font-style: italic; 
+}
+.syntax-md-inline-code { 
+    color: var(--syntax-md-inline-code); 
+    background: rgba(125, 125, 125, 0.15); 
+    border-radius: 3px; 
+    padding: 1px 4px; 
+    font-family: var(--font-code); 
+}
+.syntax-md-link { 
+    color: var(--syntax-md-link); 
+    text-decoration: underline; 
+}
 
 /* Core LSP Diagnostic Highlighting Styles (Added Fix) */
 .diagnostic.diag-error.style-vscode {
@@ -1393,12 +1470,255 @@ body.layout-resizing .resizer-h.dragging {
 
 /* Plugin / IDE card icon in the Plugins Manager (shipped glyph or placeholder). */
 .plugin-card-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
+    width: 48px;          /* Increased from 32px */
+    height: 48px;         /* Increased from 32px */
+    border-radius: 8px;   /* Adjusted for smoother corners at larger size */
     object-fit: contain;
     background: rgba(125, 125, 125, 0.10);
-    padding: 2px;
+    padding: 4px;         /* Adjusted for breathing room */
     box-sizing: border-box;
     flex-shrink: 0;
+}
+
+/* ---- Extension Details & Settings Panel ---- */
+#plugin-details-panel {
+    flex: 1;
+    height: 100%;
+    width: 100%;
+    background-color: var(--bg-dark);
+    color: var(--text-main);
+    display: none;
+    flex-direction: column;
+    z-index: 100;
+    overflow-y: auto;
+}
+
+#plugin-details-panel.hidden {
+    display: none !important;
+}
+
+.plugin-details-header {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 24px;
+    border-bottom: 1px solid var(--border-color);
+    max-width: 800px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+.plugin-details-icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 12px;
+    object-fit: contain;
+    background: rgba(125, 125, 125, 0.1);
+    padding: 6px;
+    box-sizing: border-box;
+}
+
+.plugin-details-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+}
+
+.plugin-details-title-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.plugin-details-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.plugin-details-version {
+    font-size: 11px;
+    color: var(--text-muted);
+    background: rgba(125,125,125,0.15);
+    padding: 2px 6px;
+    border-radius: 10px;
+}
+
+.plugin-details-meta-row {
+    display: flex;
+    gap: 16px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.plugin-details-body {
+    padding: 24px;
+    max-width: 800px;
+    width: 100%;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.plugin-details-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.plugin-details-section-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: var(--accent-color);
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 6px;
+    text-transform: uppercase;
+}
+
+.plugin-details-setting-card {
+    background-color: var(--bg-darker);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* ---- Custom Dropdown Component ---- */
+.custom-dropdown-container {
+    position: relative;
+    font-family: var(--font-ui);
+    width: 100%;
+}
+
+.custom-dropdown-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    background-color: var(--bg-dark);
+    color: var(--text-main);
+    border: 1px solid var(--border-color);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    outline: none;
+    box-sizing: border-box;
+}
+
+.custom-dropdown-trigger:hover {
+    border-color: var(--accent-color);
+}
+
+.custom-dropdown-label-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.custom-dropdown-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.custom-dropdown-chevron {
+    font-size: 8px;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+    margin-left: 8px;
+    flex-shrink: 0;
+}
+
+.custom-dropdown-container.open .custom-dropdown-chevron {
+    transform: rotate(180deg);
+}
+
+.custom-dropdown-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    width: 100%;
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    padding: 4px;
+    z-index: 1000;
+    box-sizing: border-box;
+}
+
+.custom-dropdown-container.open .custom-dropdown-menu {
+    display: block;
+}
+
+.custom-dropdown-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-main);
+    cursor: pointer;
+    white-space: nowrap;
+    box-sizing: border-box;
+}
+
+.custom-dropdown-option:hover {
+    background: var(--bg-button);
+}
+
+.custom-dropdown-option.active {
+    background: color-mix(in srgb, var(--accent-color) 22%, transparent);
+}
+
+.custom-dropdown-option span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.custom-dropdown-icon {
+    font-size: 11px;
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+}
+
+/* ---- Complete Selection & Font Alignment Positioning Fix ---- */
+
+/* 1. Ensure perfect pixel alignment by overriding all default user-agent properties */
+#editor, #editor-backdrop, #editor-search-layer {
+    box-sizing: border-box !important;
+    margin: 0 !important;
+    border: 0 !important;
+    padding: 12px !important;
+    font-family: var(--font-code) !important;
+    font-size: 14px !important;
+    line-height: 22px !important;
+    vertical-align: top !important;
+}
+
+/* 2. Style the textarea selections to keep the text 100% invisible */
+#editor::selection {
+    background-color: color-mix(in srgb, var(--accent-color) 30%, transparent) !important;
+    color: transparent !important;
+    -webkit-text-fill-color: transparent !important; /* Force transparent characters in Chromium selection */
+}
+
+#editor::-moz-selection {
+    background-color: color-mix(in srgb, var(--accent-color) 30%, transparent) !important;
+    color: transparent !important;
+    -webkit-text-fill-color: transparent !important;
 }

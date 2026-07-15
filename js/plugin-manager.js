@@ -462,8 +462,8 @@ export function renderPluginsManagerPanel(container) {
             const iconImg = document.createElement('img');
             iconImg.className = 'plugin-card-icon';
             iconImg.alt = '';
-            iconImg.width = 32;
-            iconImg.height = 32;
+            iconImg.width = 48;  // Increased from 32
+            iconImg.height = 48; // Increased from 32
             const placeholder = `assets/placeholder-${plugin.type === 'ide' ? 'ide' : 'extension'}.svg`;
             iconImg.src = plugin._iconPath || placeholder;
             // Gracefully fall back to the placeholder if a shipped icon fails to decode.
@@ -599,7 +599,6 @@ export function renderPluginsManagerPanel(container) {
             badgeContainer.style.alignItems = 'center';
             badgeContainer.style.gap = '6px';
             
-            // Re-appended statusBadge cleanly to ensure it renders correctly on cards
             badgeContainer.appendChild(statusBadge);
             
             // Build type indicators
@@ -615,6 +614,28 @@ export function renderPluginsManagerPanel(container) {
             typeText.style.color = 'var(--text-muted)';
             typeText.textContent = plugin.type || 'extension';
             badgeContainer.appendChild(typeText);
+
+            // Added: Settings gear button on active extension cards
+            if (plugin.status === 'active') {
+                const configBtn = document.createElement('button');
+                configBtn.className = 'plugin-settings-btn';
+                configBtn.innerHTML = '<i class="fa-solid fa-gear"></i>';
+                configBtn.style.padding = '2px 6px';
+                configBtn.style.fontSize = '11px';
+                configBtn.style.background = 'transparent';
+                configBtn.style.border = 'none';
+                configBtn.style.color = 'var(--text-muted)';
+                configBtn.style.cursor = 'pointer';
+                configBtn.title = 'Configure extension settings';
+
+                configBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (typeof window.openPluginDetailsTab === 'function') {
+                        window.openPluginDetailsTab(plugin);
+                    }
+                });
+                badgeContainer.appendChild(configBtn);
+            }
             
             actionRow.appendChild(badgeContainer);
 

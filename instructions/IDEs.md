@@ -12,6 +12,7 @@ While an **Extension** adds specific syntax capabilities, tools, or styles, an *
 - Create custom toolbar control systems inside the top bar.
 - Provide custom workspace dialog interfaces.
 - Intercept workspace loading events to render a welcome dashboard.
+- Register dedicated IDE-specific configuration settings.
 
 ---
 
@@ -145,7 +146,7 @@ ctx.addToolbarButton('new-web-project', 'Create Web Project', 'fa-solid fa-wand-
 ```
 
 ### 5.3 `ctx.showCustomModal(config)`
-Renders a custom dialog interface styled according to the editor's theme. Returns a Promise that resolves with an key-value object containing the user's input values.
+Renders a custom dialog interface styled according to the editor's theme. Returns a Promise that resolves with an key-value object containing the user's input values. All selection fields are automatically mapped to custom dropdown components.
 
 ```javascript
 ctx.addToolbarButton('configure-project', 'Custom Setup', 'fa-solid fa-sliders', async () => {
@@ -185,7 +186,39 @@ Instructs the editor workspace to open a specific file handle. Useful for auto-o
 
 ---
 
-## 6. Complete Implementation: Web Creator IDE Tutorial
+## 6. Adding IDE-Specific Settings
+
+IDEs can register custom, dedicated settings fields that reside strictly on their own **Details & Settings page** in the virtual tab bar. This isolates IDE settings from the global "Editor Preferences" panel and keeps your workspace organized.
+
+To configure IDE-specific settings, register your properties using `api.views.registerSetting` and map them directly using your IDE package ID:
+
+```javascript
+export function activate(api) {
+    // Register IDE setting
+    api.views.registerSetting('my-ide-setting', {
+        label: 'Auto-compile Templates',
+        type: 'checkbox',
+        defaultValue: true,
+        pluginId: 'web-dev-ide', // Maps settings strictly to this IDE's Details tab
+        description: 'Compiles and aggregates project layouts in background threads on save.',
+        onChange: (isEnabled) => {
+            console.log("IDE compile state updated: ", isEnabled);
+        }
+    });
+
+    // Register Workspace
+    api.workspace.registerIDE('web-dev-ide', {
+        name: 'Web Creator IDE',
+        onActivate: (ctx) => {
+            // ...
+        }
+    });
+}
+```
+
+---
+
+## 7. Complete Implementation: Web Creator IDE Tutorial
 
 Below is a complete, production-ready `index.js` showing how to implement an IDE that leverages toolbar injection, modal parameters, directory tree generation, and asset replication.
 

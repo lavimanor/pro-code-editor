@@ -42,38 +42,48 @@ export async function openDirectoryPicker() {
 export async function readDirectoryEntries(dirHandle, parentHandle = null) {
     if (isElectron && dirHandle.isElectronMock) {
         const entries = [];
-        const files = fs.readdirSync(dirHandle.path);
-        
-        for (const file of files) {
-            const fullPath = path.join(dirHandle.path, file);
-            const stat = fs.statSync(fullPath);
-            const isDirectory = stat.isDirectory();
+        try {
+            // Guard: Safe-scan directories to prevent permission crashes
+            const files = fs.readdirSync(dirHandle.path);
             
-            const item = {
-                name: file,
-                kind: isDirectory ? 'directory' : 'file',
-                handle: {
-                    kind: isDirectory ? 'directory' : 'file',
-                    name: file,
-                    path: fullPath,
-                    isElectronMock: true,
-                    getFile: async () => ({
-                        text: async () => fs.readFileSync(fullPath, 'utf8')
-                    })
-                },
-                parent: parentHandle || dirHandle
-            };
-            
-            if (isDirectory) {
-                item.children = await readDirectoryEntries(item.handle, item.handle);
+            for (const file of files) {
+                const fullPath = path.join(dirHandle.path, file);
+                try {
+                    const stat = fs.statSync(fullPath);
+                    const isDirectory = stat.isDirectory();
+                    
+                    const item = {
+                        name: file,
+                        kind: isDirectory ? 'directory' : 'file',
+                        handle: {
+                            kind: isDirectory ? 'directory' : 'file',
+                            name: file,
+                            path: fullPath,
+                            isElectronMock: true,
+                            getFile: async () => ({
+                                text: async () => fs.readFileSync(fullPath, 'utf8')
+                            })
+                        },
+                        parent: parentHandle || dirHandle
+                    };
+                    
+                    if (isDirectory) {
+                        item.children = await readDirectoryEntries(item.handle, item.handle);
+                    }
+                    entries.push(item);
+                } catch (statErr) {
+                    // Gracefully skip restricted system files/symlinks without failing the entire tree
+                    console.warn(`Skipping restricted directory entry: ${fullPath}`, statErr);
+                }
             }
-            entries.push(item);
+        } catch (dirErr) {
+            console.error(`Failed to read directory: ${dirHandle.path}`, dirErr);
         }
         
         return entries.sort((a, b) => b.kind.localeCompare(a.kind) || a.name.localeCompare(b.name));
     }
     
-    // Web Fallback
+    // Web Fallback (remains identical)
     const entries = [];
     for await (const entry of dirHandle.values()) {
         const item = {
@@ -161,6 +171,11 @@ export async function removeEntryHandle(parentHandle, entryName) {
  * Calculates the path segments of a child handle relative to a parent handle.
  */
 export async function resolveHandle(parentHandle, childHandle) {
+    if (!parentHandle || !childHandle) return null;
+    
+    // Guard: Prevent resolving virtual handles (like the Settings tab)
+    if (childHandle.isSettings) return null;
+
     if (isElectron && parentHandle.isElectronMock && childHandle.isElectronMock) {
         // Use Node's path.relative to find the exact relative path
         const relativePath = path.relative(parentHandle.path, childHandle.path);
@@ -169,6 +184,14 @@ export async function resolveHandle(parentHandle, childHandle) {
         return relativePath.split(/[\\/]/);
     }
     
-    // Web Fallback
-    return await parentHandle.resolve(childHandle);
+    // Web Fallback with robust type checking
+    if (typeof parentHandle.resolve === 'function') {
+        try {
+            return await parentHandle.resolve(childHandle);
+        } catch (err) {
+            console.warn('Web resolve failed:', err);
+            return null;
+        }
+    }
+    return null;
 }

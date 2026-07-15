@@ -112,6 +112,8 @@ export function activate(api) {
         label: 'Enable Neon Sparkle Effect',
         type: 'checkbox',
         defaultValue: false,
+        pluginId: 'sample-extension', // Maps this setting directly to the Sample Extension page
+        description: 'Injects neon beams and sparkle effects across diagnostic overlays.',
         onChange: (isChecked) => {
             const sparkleVal = document.getElementById('diag-sparkle-val');
             if (sparkleVal) {

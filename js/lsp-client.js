@@ -18,7 +18,7 @@ export class LspClient {
         this.notificationCallbacks = new Map();
         this.isElectron = typeof window !== 'undefined' && window.process && window.process.type;
         this.isStarted = false;
-        this.isStarting = false;            // Concurrency lock-out guard (Added Fix)
+        this.isStarting = false;
         this.diagnosticsRegistered = false;
 
         if (this.isElectron) {
@@ -26,8 +26,8 @@ export class LspClient {
             ipcRenderer.on('lsp-message', (event, { lspId: id, message }) => {
                 if (id !== this.lspId) return;
 
-                // Trace every incoming message payload on the frontend (Added Fix)
-                console.log(`[LSP Client Debug ${id}] Incoming Message:`, message);
+                // Silenced noisy console spams
+                // console.log(`[LSP Client Debug ${id}] Incoming Message:`, message);
 
                 if (message.id !== undefined) {
                     const resolve = this.pendingRequests.get(message.id);
@@ -73,27 +73,19 @@ export class LspClient {
 
     async start(command, args, workspacePath, initializationOptions = null) {
         if (this.isStarted || this.isStarting) {
-            console.log(`[LSP Client Debug] Already started or starting. isStarted: ${this.isStarted} | isStarting: ${this.isStarting}`);
             return true;
         }
         if (!this.isElectron) {
-            console.warn("[LSP Client Debug] Aborted: Non-Electron web sandbox environment.");
             return false;
         }
 
-        console.log(`[LSP Client Debug] Dispatching lsp-start IPC invocation for command: "${command}"`);
         this.isStarting = true;
         const { ipcRenderer } = window.require('electron');
-        // Pass initializationOptions to backend (Added Fix)
         const res = await ipcRenderer.invoke('lsp-start', this.lspId, command, args, workspacePath, initializationOptions);
         
-        console.log(`[LSP Client Debug] lsp-start IPC responded with:`, res);
         if (res && res.success) {
             try {
-                console.log("[LSP Client Debug] Running initialize handshake request...");
-                // Use the backend-resolved options containing the verified tsserver path (Added Fix)
                 await this.initialize(workspacePath, res.initializationOptions || initializationOptions);
-                console.log("[LSP Client Debug] Handshake completed successfully. Server is active.");
                 this.isStarted = true;
                 this.isStarting = false;
                 return true;

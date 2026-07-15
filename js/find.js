@@ -41,9 +41,12 @@ export function initFindReplace() {
     surfaceBox = document.getElementById('editor-surface-box');
     if (!editor || !surfaceBox) return;
 
-    searchLayer = document.createElement('div');
-    searchLayer.id = 'editor-search-layer';
-    surfaceBox.insertBefore(searchLayer, backdrop);
+    searchLayer = document.getElementById('editor-search-layer');
+    if (!searchLayer) {
+        searchLayer = document.createElement('div');
+        searchLayer.id = 'editor-search-layer';
+        surfaceBox.insertBefore(searchLayer, backdrop);
+    }
 
     widget = document.createElement('div');
     widget.id = 'find-widget';
@@ -125,8 +128,6 @@ export function initFindReplace() {
 
     // --- Keep the highlight layer aligned with the editor ----------------
     editor.addEventListener('scroll', syncScroll);
-    // Re-run search when the document changes while the widget is open so the
-    // hit list / counter never point at stale offsets.
     editor.addEventListener('input', () => {
         if (isOpen() && !suppressInput) runSearch(false);
     });
@@ -137,7 +138,6 @@ export function initFindReplace() {
             e.preventDefault();
             openFind(false);
         } else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'r' || e.key.toLowerCase() === 'h')) {
-            // Ctrl+R / Ctrl+H open Replace. preventDefault stops Ctrl+R reloading the app.
             e.preventDefault();
             openFind(true);
         }
@@ -160,7 +160,6 @@ export function openFind(withReplace) {
     widget.classList.remove('find-hidden');
     setReplaceVisible(!!withReplace);
 
-    // Seed the query with the current selection, if any.
     const sel = editor.value.substring(editor.selectionStart, editor.selectionEnd);
     if (sel && !sel.includes('\n')) {
         findInput.value = sel;
@@ -201,7 +200,6 @@ function runSearch(resetToNearest) {
         if (opts.word) pattern = `\\b${pattern}\\b`;
         regex = new RegExp(pattern, opts.case ? 'g' : 'gi');
     } catch (err) {
-        // Invalid regex — show an error state rather than throwing.
         countEl.textContent = 'Bad pattern';
         widget.classList.add('find-error');
         searchLayer.innerHTML = '';
@@ -213,7 +211,7 @@ function runSearch(resetToNearest) {
     let m;
     while ((m = regex.exec(text)) !== null) {
         matches.push({ start: m.index, end: m.index + m[0].length });
-        if (m[0].length === 0) regex.lastIndex++; // avoid zero-width infinite loop
+        if (m[0].length === 0) regex.lastIndex++;
         if (matches.length >= MAX_MATCHES) break;
     }
 
@@ -292,7 +290,6 @@ function measureCharWidth() {
 function scrollToMatch(match) {
     if (!match) return;
 
-    // Select the range so the caret lands here once the widget is dismissed.
     editor.setSelectionRange(match.start, match.end);
 
     const before = editor.value.slice(0, match.start);
@@ -305,7 +302,6 @@ function scrollToMatch(match) {
         editor.scrollTop = Math.max(0, targetTop - viewH / 2);
     }
 
-    // Horizontal: keep the match column visible.
     if (charWidth <= 1) measureCharWidth();
     const col = match.start - (before.lastIndexOf('\n') + 1);
     const targetLeft = col * charWidth;
@@ -318,7 +314,6 @@ function scrollToMatch(match) {
     syncScroll();
 }
 
-// Guards against our own programmatic edits re-triggering runSearch mid-replace.
 let suppressInput = false;
 
 /** Apply a new document value and notify the core editor via a synthetic input event. */
@@ -328,7 +323,7 @@ function commitEdit(newValue, caretStart, caretEnd) {
     editor.setSelectionRange(caretStart, caretEnd);
     editor.dispatchEvent(new Event('input', { bubbles: true }));
     suppressInput = false;
-    hideProSense(); // the synthetic input can pop the autocomplete widget open
+    hideProSense();
 }
 
 function replaceCurrent() {
@@ -340,7 +335,6 @@ function replaceCurrent() {
     const newValue = text.slice(0, match.start) + replacement + text.slice(match.end);
     commitEdit(newValue, match.start + replacement.length, match.start + replacement.length);
 
-    // Re-search, then advance to the next hit at/after the edit point.
     runSearch(false);
     if (matches.length > 0) {
         const editPoint = match.start + replacement.length;
@@ -358,7 +352,6 @@ function replaceAll() {
     const text = editor.value;
     const replacement = replaceInput.value;
 
-    // Rebuild the document in one pass so a single edit event covers everything.
     let out = '';
     let cursor = 0;
     for (const match of matches) {

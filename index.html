@@ -61,6 +61,7 @@
             <main id="workspace-container">
                 <div id="tab-bar"></div>
                 
+                <!-- Locate this block inside index.html and update the placement -->
                 <div id="editor-viewport-wrapper">
                     <div id="line-gutter"></div>
 
@@ -73,6 +74,86 @@
                         <div id="minimap-indicator"></div>
                         <pre id="minimap-text"></pre>
                     </div>
+
+                    <!-- Moved the settings-panel block inside the viewport wrapper -->
+                    <div id="settings-panel" class="hidden">
+                        <div class="settings-header">
+                            <h3><i class="fa-solid fa-gear"></i> Editor Preferences</h3>
+                            <button id="close-settings-btn">×</button>
+                        </div>
+                        <div class="settings-body">
+                            <div class="setting-item">
+                                <label for="theme-selector">Color Theme Preset:</label>
+                                <select id="theme-selector">
+                                    <option value="vs-dark">VS Code Default Dark</option>
+                                    <option value="dracula-intellij-light">Dracula IntelliJ Light</option>
+                                    <option value="dracula-intellij-dark">Dracula IntelliJ Dark</option>
+                                    <option value="monokai">Monokai Retro</option>
+                                    <option value="github-light">GitHub Pure Light</option>
+                                    <option value="solarized-dark">Solarized Oceanic</option>
+                                    <option value="roblox-studio-light">Roblox Studio Light</option>
+                                    <option value="roblox-studio-dark">Roblox Studio Dark</option>
+                                </select>
+                            </div>
+                            
+                            <div class="setting-item">
+                                <label for="icon-selector">Workspace Icon Pack:</label>
+                                <select id="icon-selector">
+                                    <option value="material">VS Code Material (Icons)</option>
+                                    <option value="emoji">Retro Emoji Pack</option>
+                                </select>
+                            </div>
+
+                            <div class="setting-item">
+                                <label for="diagnostic-style-selector">LSP Diagnostic Underlines:</label>
+                                <select id="diagnostic-style-selector">
+                                    <!-- Populated dynamically on load -->
+                                </select>
+                            </div>
+
+                            <div class="setting-item">
+                                <label for="run-mode-selector">Code Run Output:</label>
+                                <select id="run-mode-selector">
+                                    <option value="integrated">Integrated Terminal (in-app)</option>
+                                    <option value="external">External Console Window</option>
+                                </select>
+                            </div>
+
+                            <div class="setting-item flex-row">
+                                <label for="prosense-toggle" class="flex-grow">Enable ProSense Autocomplete:</label>
+                                <input type="checkbox" id="prosense-toggle" checked>
+                            </div>
+
+                            <div class="setting-item">
+                                <label>Custom Snippets Expansion Manager:</label>
+                                <div id="snippets-manager">
+                                    <div class="snippet-inputs flex-row">
+                                        <input type="text" id="snippet-trigger" placeholder="Trigger (e.g. ajax)">
+                                        <select id="snippet-lang">
+                                            <option value="all">All Languages</option>
+                                            <option value="js">JavaScript</option>
+                                            <option value="html">HTML</option>
+                                            <option value="css">CSS</option>
+                                            <option value="py">Python</option>
+                                            <option value="java">Java</option>
+                                            <option value="cs">C#</option>
+                                            <option value="cpp">C++</option>
+                                            <option value="c">C</option>
+                                            <option value="lua">Lua</option>
+                                        </select>
+                                    </div>
+                                    <textarea id="snippet-body" placeholder="Snippet Expansion Text... (use \n for standard newlines)"></textarea>
+                                    <button id="add-snippet-btn"><i class="fa-solid fa-plus"></i> Add Snippet</button>
+                                    <ul id="custom-snippets-list"></ul>
+                                </div>
+                            </div>
+                            
+                            <p class="shortcut-tip">Tip: Press <kbd>Ctrl</kbd> + <kbd>,</kbd> to toggle this menu anytime.</p>
+                        </div>
+                    </div>
+
+                    <!-- Added: Dedicated viewport for extension/IDE details and settings -->
+                    <div id="plugin-details-panel" class="hidden"></div>
                 </div>
 
                 <div id="bottom-panel" class="hidden-panel">
@@ -86,82 +167,6 @@
                             <span id="terminal-prompt" class="terminal-prompt">C:\&gt;</span>
                             <input type="text" id="terminal-input" autocomplete="off" spellcheck="false">
                         </div>
-                    </div>
-                </div>
-
-                <div id="settings-panel" class="hidden">
-                    <div class="settings-header">
-                        <h3><i class="fa-solid fa-gear"></i> Editor Preferences</h3>
-                        <button id="close-settings-btn">×</button>
-                    </div>
-                    <div class="settings-body">
-                        <div class="setting-item">
-                            <label for="theme-selector">Color Theme Preset:</label>
-                            <select id="theme-selector">
-                                <option value="vs-dark">VS Code Default Dark</option>
-                                <option value="dracula-intellij-light">Dracula IntelliJ Light</option>
-                                <option value="dracula-intellij-dark">Dracula IntelliJ Dark</option>
-                                <option value="monokai">Monokai Retro</option>
-                                <option value="github-light">GitHub Pure Light</option>
-                                <option value="solarized-dark">Solarized Oceanic</option>
-                                <option value="roblox-studio-light">Roblox Studio Light</option>
-                                <option value="roblox-studio-dark">Roblox Studio Dark</option>
-                            </select>
-                        </div>
-                        
-                        <div class="setting-item">
-                            <label for="icon-selector">Workspace Icon Pack:</label>
-                            <select id="icon-selector">
-                                <option value="material">VS Code Material (Icons)</option>
-                                <option value="emoji">Retro Emoji Pack</option>
-                            </select>
-                        </div>
-
-                        <div class="setting-item">
-                            <label for="diagnostic-style-selector">LSP Diagnostic Underlines:</label>
-                            <select id="diagnostic-style-selector">
-                                <!-- Populated dynamically on load -->
-                            </select>
-                        </div>
-
-                        <div class="setting-item">
-                            <label for="run-mode-selector">Code Run Output:</label>
-                            <select id="run-mode-selector">
-                                <option value="integrated">Integrated Terminal (in-app)</option>
-                                <option value="external">External Console Window</option>
-                            </select>
-                        </div>
-
-                        <div class="setting-item flex-row">
-                            <label for="prosense-toggle" class="flex-grow">Enable ProSense Autocomplete:</label>
-                            <input type="checkbox" id="prosense-toggle" checked>
-                        </div>
-
-                        <div class="setting-item">
-                            <label>Custom Snippets Expansion Manager:</label>
-                            <div id="snippets-manager">
-                                <div class="snippet-inputs flex-row">
-                                    <input type="text" id="snippet-trigger" placeholder="Trigger (e.g. ajax)">
-                                    <select id="snippet-lang">
-                                        <option value="all">All Languages</option>
-                                        <option value="js">JavaScript</option>
-                                        <option value="html">HTML</option>
-                                        <option value="css">CSS</option>
-                                        <option value="py">Python</option>
-                                        <option value="java">Java</option>
-                                        <option value="cs">C#</option>
-                                        <option value="cpp">C++</option>
-                                        <option value="c">C</option>
-                                        <option value="lua">Lua</option>
-                                    </select>
-                                </div>
-                                <textarea id="snippet-body" placeholder="Snippet Expansion Text... (use \n for standard newlines)"></textarea>
-                                <button id="add-snippet-btn"><i class="fa-solid fa-plus"></i> Add Snippet</button>
-                                <ul id="custom-snippets-list"></ul>
-                            </div>
-                        </div>
-                        
-                        <p class="shortcut-tip">Tip: Press <kbd>Ctrl</kbd> + <kbd>,</kbd> to toggle this menu anytime.</p>
                     </div>
                 </div>
             </main>

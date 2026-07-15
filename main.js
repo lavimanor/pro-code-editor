@@ -3,6 +3,8 @@ const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const { execFile, exec, spawn } = require('child_process');
+const { StringDecoder } = require('string_decoder');
+
 // Load default core code execution configurations dynamically
 let RUN_CONFIG_REGISTRY = {};
 try {
@@ -108,7 +110,10 @@ ipcMain.handle('start-server', (event, folderPath, activeFileName) => {
             }
 
             const filePath = path.resolve(folderPath, decodedUrl.replace(/^\//, ''));
-            if (!filePath.startsWith(path.resolve(folderPath))) {
+            const normFolderPath = path.resolve(folderPath).toLowerCase();
+            const normFilePath = filePath.toLowerCase();
+            
+            if (!normFilePath.startsWith(normFolderPath)) {
                 res.writeHead(403, { 'Content-Type': 'text/plain' });
                 res.end('403 Forbidden');
                 return;
@@ -159,7 +164,7 @@ ipcMain.handle('stop-server', () => {
 });
 
 // =====================================================================
-//  Code Execution Engine (Direct Execution Only)
+//  Code Execution Engine
 // =====================================================================
 
 let activeChild = null;
@@ -202,18 +207,43 @@ function launchStep(candidates, ctx, send) {
             }
             const { cmd, args } = resolveCandidate(candidates[idx++], ctx);
             let child;
+            const isWindows = process.platform === 'win32';
+            const env = {
+                ...process.env,
+                PYTHONUTF8: '1',
+                PYTHONIOENCODING: 'UTF-8',
+                LANG: 'en_US.UTF-8',
+                LC_ALL: 'en_US.UTF-8'
+            };
             try {
-                child = spawn(cmd, args, { cwd: ctx.dir });
+                // Only use shell: true on Windows for batch files/scripts that require cmd.exe to execute.
+                // Standard PE binaries (like python, node, java, dotnet) should run with shell: false
+                // to prevent cmd.exe from incorrectly splitting arguments containing spaces.
+                const cmdLower = cmd.toLowerCase();
+                const needsShell = isWindows && (
+                    cmdLower.endsWith('.cmd') || 
+                    cmdLower.endsWith('.bat') || 
+                    ['npm', 'npx', 'yarn', 'pnpm', 'gulp'].includes(cmdLower)
+                );
+
+                child = spawn(cmd, args, { 
+                    cwd: ctx.dir,
+                    shell: needsShell,
+                    env
+                });
             } catch (e) {
                 attempt();
                 return;
             }
 
             let launched = false;
+            const stdoutDecoder = new StringDecoder('utf8');
+            const stderrDecoder = new StringDecoder('utf8');
+
             child.once('spawn', () => {
                 launched = true;
-                if (child.stdout) child.stdout.on('data', d => send('stdout', d.toString()));
-                if (child.stderr) child.stderr.on('data', d => send('stderr', d.toString()));
+                if (child.stdout) child.stdout.on('data', d => send('stdout', stdoutDecoder.write(d)));
+                if (child.stderr) child.stderr.on('data', d => send('stderr', stderrDecoder.write(d)));
                 resolve(child);
             });
             child.once('error', (err) => {
@@ -259,13 +289,12 @@ async function runIntegrated(event, config, ctx) {
     return { success: true, running: true };
 }
 
-function quoteWin(s) {
-    return `"${String(s).replace(/"/g, '')}"`;
-}
-
 async function runExternal(config, ctx) {
+    if (!config.run || !config.run.length) {
+        return { success: false, output: `[Error] Run configuration is empty.` };
+    }
     const runCand = resolveCandidate(config.run[0], ctx);
-    const inner = [quoteWin(runCand.cmd), ...runCand.args.map(quoteWin)].join(' ');
+    const platform = process.platform;
 
     let pause = false;
     try {
@@ -273,21 +302,96 @@ async function runExternal(config, ctx) {
         pause = /\binput\s*\(|\braw_input\s*\(|\bReadKey\b|\bReadLine\b|\bScanner\b/i.test(code);
     } catch (e) { /* ignore */ }
 
-    const runCmd = pause
-        ? `start "" cmd.exe /s /c "${inner} & echo. & echo [Press any key to close the window...] & pause > nul"`
-        : `start "" cmd.exe /s /k "${inner}"`;
-
-    return new Promise((resolve) => {
-        exec(runCmd, (runErr) => {
-            if (runErr) {
-                resolve({ success: false, output: `[Runtime Launch Error]\n${runErr.message}` });
-            } else {
-                resolve({ success: true, output: `[Launched ${config.label} in an external window]` });
+    if (platform === 'win32') {
+        const escapedArgs = runCand.args.map(arg => {
+            // Enclose parameters in quotes if they contain spaces or special characters
+            if (arg.includes(' ') || arg.includes('&') || arg.includes('^') || arg.includes('(') || arg.includes(')')) {
+                return `"${arg.replace(/"/g, '')}"`; // Remove inner quotes to avoid triple-quoting
             }
+            return arg;
         });
-    });
-}
+        const cmdEscaped = runCand.cmd.includes(' ') ? `"${runCand.cmd.replace(/"/g, '')}"` : runCand.cmd;
+        const inner = [cmdEscaped, ...escapedArgs].join(' ');
+        
+        // Wrap the entire command string in an extra set of outer double quotes.
+        // This satisfies cmd.exe's parsing rules exactly, preventing paths with spaces from breaking.
+        const runCmd = pause
+            ? `start "" cmd.exe /c ""${inner}" & pause"`
+            : `start "" cmd.exe /k ""${inner}""`;
 
+        return new Promise((resolve) => {
+            exec(runCmd, { cwd: ctx.dir }, (runErr) => {
+                if (runErr) {
+                    resolve({ success: false, output: `[Runtime Launch Error]\n${runErr.message}` });
+                } else {
+                    resolve({ success: true, output: `[Launched ${config.label} in an external CMD window]` });
+                }
+            });
+        });
+    } else if (platform === 'darwin') {
+        const escapedArgs = runCand.args.map(arg => `'${arg.replace(/'/g, "'\\''")}'`);
+        const cmdEscaped = runCand.cmd.includes(' ') ? `'${runCand.cmd}'` : runCand.cmd;
+        let inner = [cmdEscaped, ...escapedArgs].join(' ');
+        if (pause) {
+            inner += `; echo; read -p 'Press Enter to close...'`;
+        }
+
+        const appleScript = `
+            tell application "Terminal"
+                do script "cd '${ctx.dir.replace(/'/g, "'\\''")}' && ${inner.replace(/"/g, '\\"')}"
+                activate
+            end tell
+        `;
+
+        return new Promise((resolve) => {
+            const child = spawn('osascript', ['-e', appleScript]);
+            child.on('error', (err) => {
+                resolve({ success: false, output: `[Runtime Launch Error]\n${err.message}` });
+            });
+            child.on('close', (code) => {
+                if (code === 0) {
+                    resolve({ success: true, output: `[Launched ${config.label} in macOS Terminal]` });
+                } else {
+                    resolve({ success: false, output: `[Runtime Launch Error] osascript exited with code ${code}` });
+                }
+            });
+        });
+    } else {
+        const escapedArgs = runCand.args.map(arg => `'${arg.replace(/'/g, "'\\''")}'`);
+        const cmdEscaped = runCand.cmd.includes(' ') ? `'${runCand.cmd}'` : runCand.cmd;
+        let inner = [cmdEscaped, ...escapedArgs].join(' ');
+        if (pause) {
+            inner += `; echo; read -p 'Press Enter to close...'`;
+        }
+
+        const terminals = [
+            { cmd: 'x-terminal-emulator', args: ['-e', `bash -c "cd '${ctx.dir}' && ${inner}"`] },
+            { cmd: 'gnome-terminal', args: ['--', 'bash', '-c', `cd '${ctx.dir}' && ${inner}`] },
+            { cmd: 'konsole', args: ['-e', 'bash', '-c', `cd '${ctx.dir}' && ${inner}`] },
+            { cmd: 'xfce4-terminal', args: ['-e', `bash -c "cd '${ctx.dir}' && ${inner}"`] },
+            { cmd: 'xterm', args: ['-e', `bash -c "cd '${ctx.dir}' && ${inner}"`] }
+        ];
+
+        return new Promise((resolve) => {
+            let termIdx = 0;
+            const tryNextTerminal = () => {
+                if (termIdx >= terminals.length) {
+                    resolve({ success: false, output: `[Runtime Launch Error] No supported terminal emulator found.` });
+                    return;
+                }
+                const t = terminals[termIdx++];
+                const proc = spawn(t.cmd, t.args);
+                proc.on('error', () => {
+                    tryNextTerminal();
+                });
+                proc.on('spawn', () => {
+                    resolve({ success: true, output: `[Launched ${config.label} in ${t.cmd}]` });
+                });
+            };
+            tryNextTerminal();
+        });
+    }
+}
 ipcMain.handle('run-file', async (event, filePath, mode) => {
     const ext = path.extname(filePath).replace('.', '').toLowerCase();
     const config = RUN_CONFIG_REGISTRY[ext];
@@ -327,25 +431,20 @@ ipcMain.handle('get-run-langs', () => {
 });
 
 // =====================================================================
-//  Plugin Scanning & Manifest Discovery (Renderer Bridge)
+//  Plugin Scanning & Manifest Discovery
 // =====================================================================
 ipcMain.handle('scan-plugins', async () => {
     const customDir = path.join(__dirname, 'custom');
     const extensionsDir = path.join(customDir, 'extensions');
     const idesDir = path.join(customDir, 'ides');
 
-    // Ensure the baseline custom directory architecture exists
     if (!fs.existsSync(customDir)) fs.mkdirSync(customDir);
     if (!fs.existsSync(extensionsDir)) fs.mkdirSync(extensionsDir);
     if (!fs.existsSync(idesDir)) fs.mkdirSync(idesDir);
 
     const plugins = [];
-
-    // Recognized raster/vector icon container formats an extension or IDE may ship.
     const ICON_EXTENSIONS = ['.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.avif'];
 
-    // Resolves a web-safe icon path for a plugin: honors an explicit manifest "icon"
-    // field first, then auto-detects a conventional icon.* file inside the plugin folder.
     const resolveIconPath = (fullPath, relativePath, manifest) => {
         const toWeb = (abs) => path.relative(__dirname, abs).replace(/\\/g, '/');
 
@@ -369,19 +468,14 @@ ipcMain.handle('scan-plugins', async () => {
             const content = fs.readFileSync(manifestPath, 'utf8');
             const manifest = JSON.parse(content);
 
-            // Attach metadata fields needed for runtime execution
             manifest._localPath = fullPath;
             manifest._dirName = folder;
             manifest.type = manifest.type || expectedType;
 
-            // Compute web-safe relative path from the app root directory
             const relativePath = path.relative(__dirname, fullPath).replace(/\\/g, '/');
             manifest._relativePath = relativePath;
-
-            // Resolve an optional icon glyph (falls back to a placeholder on the renderer)
             manifest._iconPath = resolveIconPath(fullPath, relativePath, manifest);
 
-            // Normalize declared extension dependencies to an array of ids
             if (manifest.extensionDependencies && !Array.isArray(manifest.extensionDependencies)) {
                 manifest.extensionDependencies = [manifest.extensionDependencies];
             }
@@ -403,8 +497,6 @@ ipcMain.handle('scan-plugins', async () => {
 
             const manifest = readManifest(fullPath, folder, expectedType);
 
-            // IDEs may ship "integrated" extensions inside a nested extensions/ folder.
-            // These are discovered and pushed BEFORE the IDE itself so they activate first.
             if (expectedType === 'ide' && !manifest.error) {
                 const bundledDir = path.join(fullPath, 'extensions');
                 if (fs.existsSync(bundledDir)) {
@@ -437,14 +529,13 @@ ipcMain.handle('register-runner', (event, ext, config) => {
 });
 
 // =====================================================================
-//  System Environment Control Bridge (App Relauncher & Runner Reset)
+//  System Environment Control Bridge
 // =====================================================================
 ipcMain.handle('relaunch-app', () => {
     app.relaunch();
     app.exit(0);
 });
 
-// Recursively copies a directory (Added Fix)
 function copyRecursiveSync(src, dest) {
     const exists = fs.existsSync(src);
     const stats = exists && fs.statSync(src);
@@ -454,15 +545,13 @@ function copyRecursiveSync(src, dest) {
             fs.mkdirSync(dest);
         }
         fs.readdirSync(src).forEach(function(childItemName) {
-            copyRecursiveSync(path.join(src, childItemName),
-                              path.join(dest, childItemName));
+            copyRecursiveSync(path.join(src, childItemName), path.join(dest, childItemName));
         });
     } else {
         fs.copyFileSync(src, dest);
     }
 }
 
-// IPC handler to copy predefined IDE template directories recursively (Added Fix)
 ipcMain.handle('copy-ide-template', async (event, ideId, templateFolder, targetPath) => {
     const customDir = path.join(__dirname, 'custom');
     const idesDir = path.join(customDir, 'ides');
@@ -481,10 +570,8 @@ ipcMain.handle('copy-ide-template', async (event, ideId, templateFolder, targetP
     }
 });
 
-// IPC Handler to reset dynamic runtime executions back to run-config defaults (Added Fix)
 ipcMain.handle('reset-runners', () => {
     try {
-        // Delete Node require cache to ensure fresh values if run-config.js was edited
         delete require.cache[require.resolve('./run-config')];
         const defaults = require('./run-config');
         RUN_CONFIG_REGISTRY = { ...defaults };
@@ -494,11 +581,9 @@ ipcMain.handle('reset-runners', () => {
     return true;
 });
 
-// Workaround for Electron focus-loss bug after native alerts/confirms (Added Fix)
 ipcMain.handle('focus-fix', () => {
     const wins = BrowserWindow.getAllWindows();
     if (wins.length > 0) {
-        // Blurring and refocusing the window restores input states on Windows
         wins[0].blur();
         wins[0].focus();
     }
@@ -506,7 +591,7 @@ ipcMain.handle('focus-fix', () => {
 });
 
 // =====================================================================
-//  LSP (Language Server Protocol) Process Subsystem (Added Fix)
+//  LSP (Language Server Protocol) Process Subsystem
 // =====================================================================
 
 class LspProcess {
@@ -516,25 +601,24 @@ class LspProcess {
         
         const isWindows = process.platform === 'win32';
         if (isWindows) {
-            // Pre-concatenate command and args into a single command string on Windows
-            // to bypass the Node.js DEP0190 array-arg shell injection warning.
             const cmdString = [command, ...args].join(' ');
-            console.log(`[LSP Main Debug] Windows Spawn: "${cmdString}" in cwd: "${cwd}"`);
+            // Noisy spawn logging quieted:
+            // console.log(`[LSP Main Debug] Windows Spawn: "${cmdString}" in cwd: "${cwd}"`);
             this.child = spawn(cmdString, { 
                 cwd,
                 shell: true
             });
         } else {
-            console.log(`[LSP Main Debug] Unix Spawn: "${command}" args: ${args} in cwd: "${cwd}"`);
+            // console.log(`[LSP Main Debug] Unix Spawn: "${command}" args: ${args} in cwd: "${cwd}"`);
             this.child = spawn(command, args, { 
                 cwd,
                 shell: false
             });
         }
         
-        if (this.child.pid) {
-            console.log(`[LSP Main Debug] Subprocess successfully spawned. PID: ${this.child.pid}`);
-        }
+        // if (this.child.pid) {
+        //     console.log(`[LSP Main Debug] Subprocess successfully spawned. PID: ${this.child.pid}`);
+        // }
         
         this.buffer = Buffer.alloc(0);
 
@@ -558,7 +642,6 @@ class LspProcess {
 
     send(message) {
         const json = JSON.stringify(message);
-        // Compose standard LSP Content-Length HTTP-style header payload
         const payload = `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`;
         if (this.child.stdin.writable) {
             this.child.stdin.write(payload);
@@ -567,15 +650,12 @@ class LspProcess {
 
     parseBuffer() {
         while (true) {
-            // Find the boundary between headers and body: \r\n\r\n
             const headerEnd = this.buffer.indexOf('\r\n\r\n');
             if (headerEnd === -1) break;
 
-            // Extract the header segment as a string to parse Content-Length
             const headerPart = this.buffer.toString('utf8', 0, headerEnd);
             const lengthMatch = headerPart.match(/Content-Length:\s*(\d+)/i);
             if (!lengthMatch) {
-                // Skip past corrupt headers
                 this.buffer = this.buffer.subarray(headerEnd + 4);
                 continue;
             }
@@ -583,23 +663,18 @@ class LspProcess {
             const contentLength = parseInt(lengthMatch[1], 10);
             const bodyStart = headerEnd + 4;
 
-            // Check if we have the complete body (measured in actual raw bytes)
             if (this.buffer.length < bodyStart + contentLength) {
-                break; // Await more incoming data chunks
+                break;
             }
 
-            // Slice out the JSON body block
             const bodyBuffer = this.buffer.subarray(bodyStart, bodyStart + contentLength);
-            
-            // Advance the main buffer past the parsed message
             this.buffer = this.buffer.subarray(bodyStart + contentLength);
 
             try {
                 const bodyStr = bodyBuffer.toString('utf8');
                 const msg = JSON.parse(bodyStr);
                 
-                // Trace every parsed message method and ID
-                console.log(`[LSP Main Debug] Parsed Message from "${this.id}" | Method: "${msg.method || 'Response'}" | ID: ${msg.id !== undefined ? msg.id : 'N/A'}`);
+                // console.log(`[LSP Main Debug] Parsed Message from "${this.id}" | Method: "${msg.method || 'Response'}" | ID: ${msg.id !== undefined ? msg.id : 'N/A'}`);
                 
                 if (this.win && !this.win.isDestroyed()) {
                     this.win.webContents.send('lsp-message', { lspId: this.id, message: msg });
@@ -621,12 +696,10 @@ ipcMain.handle('lsp-start', (event, lspId, command, args, cwd, initializationOpt
     console.log(`[LSP Main Debug] lsp-start IPC handler received lspId: "${lspId}" | cmd: "${command}"`);
     const win = BrowserWindow.fromWebContents(event.sender);
     
-    // Auto-resolve global tsserver.js path dynamically on Windows using npm root query (Added Fix)
     let finalOptions = initializationOptions || {};
     if (process.platform === 'win32' && command.startsWith('typescript-language-server')) {
         try {
             const { execSync } = require('child_process');
-            // Query npm dynamically to find the exact global installation path on this machine
             const globalNpmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
             const resolvedPath = path.join(globalNpmRoot, 'typescript/lib/tsserver.js');
             
@@ -654,7 +727,7 @@ ipcMain.handle('lsp-start', (event, lspId, command, args, cwd, initializationOpt
     try {
         const server = new LspProcess(lspId, command, args, win, cwd);
         activeLspServers.set(lspId, server);
-        return { success: true, initializationOptions: finalOptions }; // Return the dynamically resolved options (Added Fix)
+        return { success: true, initializationOptions: finalOptions };
     } catch (err) {
         console.error(`[LSP Main Debug] Failed to instantiate LspProcess:`, err);
         return { success: false, error: err.message };
@@ -680,7 +753,6 @@ ipcMain.handle('lsp-stop', (event, lspId) => {
     return false;
 });
 
-// Kill all active language servers when Electron app is about to close
 app.on('will-quit', () => {
     activeLspServers.forEach(server => server.kill());
     activeLspServers.clear();

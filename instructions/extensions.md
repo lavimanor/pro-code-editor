@@ -16,7 +16,7 @@ Extensions can register:
 - Language Server Protocol (LSP) clients
 - Custom terminal script/code execution pathways (runners)
 - Sidebar panels
-- User preference settings
+- User preference settings (with custom dropdowns and per-extension details pages)
 - Custom diagnostic styles (linters and error displays)
 
 ---
@@ -240,13 +240,19 @@ api.views.registerSidebarPanel('neon-diagnostics', {
 ```
 
 ### 5.8 Custom Preference Settings (`api.views.registerSetting`)
-Injects native interactive inputs directly into the Editor Preferences settings panel. Input values are automatically persisted in `localStorage` inside the namespace `setting-pref-[settingId]`.
+Registers preference setting parameters. 
+
+Settings that do not declare a `pluginId` are rendered inside the global "Editor Preferences" panel. Settings that **do** declare a `pluginId` are isolated from global preferences and are rendered on your extension's dedicated, VS Code-style Settings/Info details page.
+
+Values are automatically persisted in `localStorage` under `setting-pref-[settingId]`. All select elements are retrofitted with custom styled dropdowns.
 
 ```javascript
 api.views.registerSetting('neon-sparkle', {
     label: 'Enable Neon Sparkle Effect',
     type: 'checkbox',
     defaultValue: false,
+    pluginId: 'my-custom-extension', // Maps this setting to the extension's dedicated info page
+    description: 'Injects neon beams and sparkle effects across diagnostic overlays.',
     onChange: (isChecked) => {
         console.log("Sparkle updated: ", isChecked);
     }
