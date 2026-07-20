@@ -131,6 +131,88 @@ class LanguagesAPI {
     }
 }
 
+class EventsAPI {
+    constructor() {
+        this.listeners = new Map(); // Map: eventName -> Set of callbacks
+    }
+
+    /**
+     * Subscribe to a core editor event. Returns an unsubscribe function.
+     * Core events: 'file-opened', 'file-saved', 'content-changed',
+     * 'diagnostics-updated', 'workspace-opened'.
+     */
+    on(event, callback) {
+        if (!this.listeners.has(event)) {
+            this.listeners.set(event, new Set());
+        }
+        this.listeners.get(event).add(callback);
+        return () => this.off(event, callback);
+    }
+
+    off(event, callback) {
+        const set = this.listeners.get(event);
+        if (set) set.delete(callback);
+    }
+
+    emit(event, payload) {
+        const set = this.listeners.get(event);
+        if (!set) return;
+        set.forEach(cb => {
+            try { cb(payload); } catch (err) {
+                console.error(`[API] Event listener for "${event}" threw:`, err);
+            }
+        });
+    }
+
+    clear() {
+        this.listeners.clear();
+    }
+}
+
+/**
+ * Facade over the live editor surface. The host (app.js) attaches its
+ * internal handlers at boot; plugins consume the stable methods below.
+ */
+class EditorAPI {
+    constructor() {
+        this._host = null;
+    }
+
+    _attachHost(host) {
+        this._host = host;
+    }
+
+    /** Full (unfolded) text of the active document. */
+    getText() {
+        return this._host ? this._host.getText() : '';
+    }
+
+    /** { path, name } of the active file, or null. */
+    getActiveFile() {
+        return this._host ? this._host.getActiveFile() : null;
+    }
+
+    /** Jump the caret to a 1-based line (optional 0-based column). */
+    goToLine(line, column = null) {
+        if (this._host) this._host.goToLine(line, column);
+    }
+
+    /** Re-focus an already-open tab by absolute path. Resolves true on success. */
+    async openFileByPath(path) {
+        return this._host ? this._host.openFileByPath(path) : false;
+    }
+
+    /** Re-read the active file from disk (e.g. after an external formatter ran). */
+    async reloadActiveFile() {
+        return this._host ? this._host.reloadActiveFile() : false;
+    }
+
+    /** Reveal the bottom panel and focus the given registered tab. */
+    openBottomPanelTab(id) {
+        if (this._host) this._host.openBottomPanelTab(id);
+    }
+}
+
 class TerminalAPI {
     constructor() {
         this.isElectron = typeof window !== 'undefined' && window.process && window.process.type;
@@ -163,6 +245,8 @@ class ViewsAPI {
         this.sidebarPanels = new Map();
         this.customSettings = new Map();
         this.diagnosticStyles = new Map(); // Map: id -> custom css class definitions (Added Fix)
+        this.bottomPanelTabs = new Map();  // Map: id -> { title, render } bottom dock tabs
+        this.statusBarItems = new Map();   // Map: id -> { side, tooltip, onClick, render } status bar widgets
     }
 
     registerSidebarPanel(id, config) {
@@ -186,6 +270,28 @@ class ViewsAPI {
         }
     }
 
+    /**
+     * Registers a tab inside the bottom dock (next to TERMINAL).
+     * Config: { title: string, render: (container) => void }
+     */
+    registerBottomPanelTab(id, config) {
+        this.bottomPanelTabs.set(id, config);
+        if (typeof window.renderDynamicBottomTabs === 'function') {
+            window.renderDynamicBottomTabs();
+        }
+    }
+
+    /**
+     * Registers a widget inside the status bar.
+     * Config: { side: 'left'|'right', tooltip, onClick, render: (el) => void, text }
+     */
+    registerStatusBarItem(id, config) {
+        this.statusBarItems.set(id, config);
+        if (typeof window.renderDynamicStatusItems === 'function') {
+            window.renderDynamicStatusItems();
+        }
+    }
+
     getDiagnosticStyle(id) {
         return this.diagnosticStyles.get(id);
     }
@@ -194,6 +300,8 @@ class ViewsAPI {
         this.sidebarPanels.clear();
         this.customSettings.clear();
         this.diagnosticStyles.clear();
+        this.bottomPanelTabs.clear();
+        this.statusBarItems.clear();
     }
 }
 
@@ -233,6 +341,8 @@ class ProEditorAPI {
         this.terminal = new TerminalAPI();
         this.views = new ViewsAPI();
         this.workspace = new WorkspaceAPI();
+        this.events = new EventsAPI();
+        this.editor = new EditorAPI();
     }
 }
 

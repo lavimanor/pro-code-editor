@@ -6,8 +6,12 @@ export function registerPythonSettings(api) {
             type: 'select',
             options: ['Global System', 'Virtual Environment (venv)', 'Conda Environment'],
             defaultValue: 'Global System',
+            pluginId: 'pythonix-ide', // Synchronized to match package.json
+            description: 'Sets the targeted context used for downloading custom python libraries.',
             onChange: (value) => {
-                console.log(`[Python IDE] Environment setting updated: ${value}`);
+                console.log(`[Pythonix IDE] Environment setting updated: ${value}`);
+                // Notify live widgets (interpreter status bar, pip manager) of the switch
+                api.events.emit('pythonix-env-changed', value);
             }
         });
 
@@ -16,8 +20,10 @@ export function registerPythonSettings(api) {
             label: 'Auto Format Python Files on Save',
             type: 'checkbox',
             defaultValue: false,
+            pluginId: 'pythonix-ide', // Synchronized to match package.json
+            description: 'Automatically formats code on each file save.',
             onChange: (isChecked) => {
-                console.log(`[Python IDE] Format-on-save setting updated: ${isChecked}`);
+                console.log(`[Pythonix IDE] Format-on-save setting updated: ${isChecked}`);
             }
         });
 
@@ -27,13 +33,15 @@ export function registerPythonSettings(api) {
             type: 'select',
             options: ['off', 'basic', 'strict'],
             defaultValue: 'basic',
+            pluginId: 'pythonix-ide', // Synchronized to match package.json
+            description: 'Configures type checking analysis rules for the Pyright LSP connection.',
             onChange: (level) => {
-                console.log(`[Python IDE] Pyright strictness setting updated: ${level}`);
+                console.log(`[Pythonix IDE] Pyright strictness setting updated: ${level}`);
             }
         });
 
-        console.log("Python IDE custom setting options registered.");
+        console.log("Pythonix IDE settings options registered successfully.");
     } catch (error) {
-        console.error("Could not register Python preference settings:", error);
+        console.error("Could not register Pythonix settings:", error);
     }
 }

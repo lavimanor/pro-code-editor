@@ -87,6 +87,11 @@ function ensureTerminalOpen() {
     if (terminalPanel && terminalPanel.classList.contains('hidden-panel')) {
         toggleTerminal();
     }
+    // If another bottom dock tab (e.g. Problems) is fronted, bring the terminal forward
+    // so live program output is actually visible.
+    if (typeof window.switchBottomTab === 'function') {
+        window.switchBottomTab('terminal');
+    }
 }
 
 export function updateTerminalPrompt(workspacePath) {

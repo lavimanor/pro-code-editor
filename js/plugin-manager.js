@@ -1,5 +1,6 @@
 import { printToTerminal } from './terminal.js';
 import { api } from './api-core.js';
+import { registerProblemsPanel } from './problems.js';
 
 const CORE_API_VERSION = '1.0.0';
 
@@ -120,6 +121,7 @@ export class PluginManager {
         api.icons.clear();
         api.languages.clear();
         api.views.clear(); // This clears the registry including 'plugins-manager'
+        api.events.clear(); // Drop stale plugin event subscriptions before re-activation
         await api.terminal.resetRunners();
 
         // 3. Immediately re-register the built-in Plugins Manager panel
@@ -130,6 +132,10 @@ export class PluginManager {
                 renderPluginsManagerPanel(container);
             }
         });
+
+        // Re-register the built-in Problems panel + status counter (views.clear() and
+        // events.clear() above dropped its registration and diagnostics subscription).
+        registerProblemsPanel(api);
 
         // 4. Re-initialize baseline standard configurations
         const themesModule = await import('./themes.js');
@@ -160,6 +166,8 @@ export class PluginManager {
         // Refresh dynamically contributed views
         if (typeof window.renderDynamicSidebarPanels === 'function') window.renderDynamicSidebarPanels();
         if (typeof window.renderDynamicSettings === 'function') window.renderDynamicSettings();
+        if (typeof window.renderDynamicBottomTabs === 'function') window.renderDynamicBottomTabs();
+        if (typeof window.renderDynamicStatusItems === 'function') window.renderDynamicStatusItems();
         if (typeof window.renderIdeSelector === 'function') window.renderIdeSelector();
 
         // Restore active IDE if it exists

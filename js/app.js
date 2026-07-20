@@ -17,6 +17,7 @@ import { initMinimapScroll } from './minimap.js';
 import { getCustomSnippets, saveCustomSnippets, renderSnippetsList } from './snippets.js';
 import { initTerminal, toggleTerminal, updateTerminalPrompt, printToTerminal, appendOutputChunk, setRunState } from './terminal.js';
 import { initFindReplace } from './find.js';
+import { registerProblemsPanel } from './problems.js';
 
 // Application State Models
 let rootDirectoryHandle = null;
@@ -727,6 +728,104 @@ window.renderDynamicSidebarPanels = () => {
     });
 };
 
+/**
+ * Bottom Dock Tab Engine:
+ * The bottom panel hosts the built-in TERMINAL plus any plugin-registered tabs
+ * (e.g. a Problems view). Each dynamic tab owns an isolated content container.
+ */
+let activeBottomTab = 'terminal';
+
+function switchBottomTab(tabId) {
+    activeBottomTab = tabId;
+
+    document.querySelectorAll('#bottom-tab-strip .bottom-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.id === `bottom-tab-${tabId}`);
+    });
+
+    const terminalContainer = document.getElementById('terminal-container');
+    if (terminalContainer) {
+        terminalContainer.style.display = tabId === 'terminal' ? '' : 'none';
+    }
+    document.querySelectorAll('.dynamic-bottom-content').forEach(el => {
+        el.style.display = el.id === `bottom-content-${tabId}` ? 'block' : 'none';
+    });
+}
+window.switchBottomTab = switchBottomTab;
+
+// Reveal the bottom dock (if collapsed) and focus the requested tab.
+window.openBottomPanelTab = (tabId) => {
+    if (bottomPanel.classList.contains('hidden-panel')) {
+        toggleTerminal();
+    }
+    switchBottomTab(tabId);
+};
+
+window.renderDynamicBottomTabs = () => {
+    const strip = document.getElementById('bottom-tab-strip');
+    if (!strip) return;
+
+    document.querySelectorAll('.dynamic-bottom-tab').forEach(el => el.remove());
+    document.querySelectorAll('.dynamic-bottom-content').forEach(el => el.remove());
+
+    api.views.bottomPanelTabs.forEach((config, id) => {
+        const btn = document.createElement('button');
+        btn.className = 'bottom-tab dynamic-bottom-tab';
+        btn.id = `bottom-tab-${id}`;
+        btn.textContent = (config.title || id).toUpperCase();
+        btn.addEventListener('click', () => switchBottomTab(id));
+        strip.appendChild(btn);
+
+        const content = document.createElement('div');
+        content.className = 'dynamic-bottom-content';
+        content.id = `bottom-content-${id}`;
+        bottomPanel.appendChild(content);
+        try {
+            config.render(content);
+        } catch (err) {
+            content.innerHTML = `<div style="padding:12px; color:#ef5350;">Error rendering tab: ${err.message}</div>`;
+        }
+    });
+
+    // Fall back to the terminal if the previously active tab no longer exists.
+    if (activeBottomTab !== 'terminal' && !api.views.bottomPanelTabs.has(activeBottomTab)) {
+        activeBottomTab = 'terminal';
+    }
+    switchBottomTab(activeBottomTab);
+};
+
+/**
+ * Dynamically renders plugin-contributed widgets into the status bar.
+ */
+window.renderDynamicStatusItems = () => {
+    document.querySelectorAll('.dynamic-status-item').forEach(el => el.remove());
+
+    api.views.statusBarItems.forEach((config, id) => {
+        const container = document.querySelector(config.side === 'left' ? '.status-left' : '.status-right');
+        if (!container) return;
+
+        const item = document.createElement('span');
+        item.className = 'dynamic-status-item' + (config.onClick ? ' status-clickable' : '');
+        item.id = `status-item-${id}`;
+        if (config.tooltip) item.title = config.tooltip;
+        if (config.onClick) {
+            item.addEventListener('click', () => {
+                try { config.onClick(); } catch (err) { console.error(err); }
+            });
+        }
+
+        // Right-side items slot in before the theme indicator; left-side items append.
+        // Insert BEFORE invoking render so the plugin sees a connected element.
+        const themeIndicator = container.querySelector('#status-theme-indicator');
+        container.insertBefore(item, config.side === 'left' ? null : themeIndicator);
+
+        if (typeof config.render === 'function') {
+            try { config.render(item); } catch (err) { console.error(err); }
+        } else if (config.text) {
+            item.textContent = config.text;
+        }
+    });
+};
+
 // Monitors active tab file extensions to show/hide the "Go Live" server button
 function updateGoLiveVisibility(fileName) {
     if (!btnGoLive) return;
@@ -1121,6 +1220,17 @@ editor.addEventListener('input', () => {
             lspEntry.client.didChange(activeFileHandle.path, currentVersion, cleanText);
         }
     }
+
+    // Debounced content-change broadcast for plugin subscribers (outline views, etc.)
+    clearTimeout(window._contentChangedTimer);
+    window._contentChangedTimer = setTimeout(() => {
+        if (!activeFileHandle || activeFileHandle.isSettings || activeFileHandle.isPluginDetails) return;
+        api.events.emit('content-changed', {
+            path: activeFileHandle.path || activeFileHandle.name,
+            name: activeFileHandle.name,
+            contents: folding.getFullText(editor.value)
+        });
+    }, 300);
 
     // Trigger autocomplete suggestions strictly during input events
     const activeName = activeFileHandle ? activeFileHandle.name : '';
@@ -1538,12 +1648,31 @@ async function handleGoToLine() {
     const requested = parseInt(input, 10);
     if (Number.isNaN(requested)) return;
 
-    const target = Math.max(1, Math.min(lines.length, requested));
+    jumpToEditorLine(requested);
+}
+
+/**
+ * Programmatically move the caret to a 1-based file line (optionally a 0-based
+ * column) and center it in the viewport. Folded regions are expanded first.
+ * Also exposed to plugins through api.editor.goToLine.
+ */
+function jumpToEditorLine(lineNumber, column = null) {
+    if (!activeFileHandle) return;
+
+    if (folding.hasFolds()) folding.unfoldAll();
+
+    const lines = editor.value.split('\n');
+    const target = Math.max(1, Math.min(lines.length, lineNumber));
     let offset = 0;
     for (let i = 0; i < target - 1; i++) offset += lines[i].length + 1;
-    // Land after any leading indentation so the caret sits on the first real token.
-    const indent = lines[target - 1].match(/^\s*/)[0].length;
-    offset += indent;
+
+    const lineText = lines[target - 1];
+    if (column !== null && !Number.isNaN(column)) {
+        offset += Math.max(0, Math.min(lineText.length, column));
+    } else {
+        // Land after any leading indentation so the caret sits on the first real token.
+        offset += lineText.match(/^\s*/)[0].length;
+    }
 
     editor.focus();
     editor.selectionStart = editor.selectionEnd = offset;
@@ -1640,7 +1769,11 @@ async function handleOpenFolder() {
             expandedFolders.clear();
             
             updateTerminalPrompt(rootDirectoryHandle.path);
+            // Expose the active workspace path so IDE plugins (e.g. Pythonix pip manager)
+            // can resolve the correct working directory / virtual environment.
+            window.currentWorkspacePath = rootDirectoryHandle.path;
             await refreshExplorer();
+            api.events.emit('workspace-opened', { path: rootDirectoryHandle.path });
         }
     } catch (err) {
         console.error('Directory pipeline configuration closed.', err);
@@ -1749,6 +1882,13 @@ async function handleOpenFile(fileHandle) {
         runLayoutRenderEngine();
         await refreshExplorer();
 
+        // Broadcast tab focus to plugin subscribers (outline views, problem panels, etc.)
+        api.events.emit('file-opened', {
+            path: activeFileHandle.path || activeFileHandle.name,
+            name: activeFileHandle.name,
+            contents
+        });
+
         // Check if an LSP client is registered for this file extension
         const fileExt = activeFileHandle.name.split('.').pop().toLowerCase();
         const langConfig = api.languages.get(fileExt);
@@ -1805,15 +1945,27 @@ async function handleOpenFile(fileHandle) {
                                 startOffset = Math.max(0, Math.min(fileText.length - 1, startOffset));
                                 endOffset = Math.max(1, Math.min(fileText.length, endOffset));
 
+                                // Carry line/column coordinates so list views (Problems
+                                // panels) can display and jump without re-deriving them.
+                                const pos = offsetToLspPosition(fileText, startOffset);
+
                                 return {
                                     start: startOffset,
                                     end: endOffset,
+                                    line: pos.line,
+                                    col: pos.character,
                                     severity: diag.severity,
                                     message: diag.message
                                 };
                             });
-                            
+
                             window.activeDiagnosticsCache.set(cleanPath, mappedDiags);
+
+                            // Broadcast to plugin subscribers (e.g. Problems panels)
+                            api.events.emit('diagnostics-updated', {
+                                path: cleanPath,
+                                diagnostics: mappedDiags
+                            });
 
                             const currentActivePath = activeFileHandle && activeFileHandle.path ? activeFileHandle.path.toLowerCase() : '';
                             if (cleanPath === currentActivePath) {
@@ -1846,6 +1998,13 @@ async function handleSaveFile() {
         tabContentsCache.set(fileKey(activeFileHandle), fullText);
         dirtyFiles.delete(fileKey(activeFileHandle));
         updateTabsUI();
+
+        // Broadcast to plugin subscribers (e.g. format-on-save pipelines)
+        api.events.emit('file-saved', {
+            path: activeFileHandle.path || activeFileHandle.name,
+            name: activeFileHandle.name,
+            contents: fullText
+        });
     } catch (err) {
         alert('Disk write execution target exception errors encountered.');
     }
@@ -2284,6 +2443,9 @@ const closePanelBtn = document.getElementById('close-panel-btn');
 if (actTerminal) actTerminal.addEventListener('click', toggleTerminal);
 if (closePanelBtn) closePanelBtn.addEventListener('click', toggleTerminal);
 
+const terminalTabBtn = document.getElementById('bottom-tab-terminal');
+if (terminalTabBtn) terminalTabBtn.addEventListener('click', () => switchBottomTab('terminal'));
+
 // Prosense Toggle setup
 if (prosenseToggle) {
     const isEnabled = localStorage.getItem('prosense-enabled') !== 'false';
@@ -2328,6 +2490,55 @@ initFindReplace();
  * prior to building selectors or configuring the workspace.
  */
 async function bootEditor() {
+    // Wire the editor facade so plugins can inspect and drive the live surface
+    api.editor._attachHost({
+        getText: () => (activeFileHandle ? folding.getFullText(editor.value) : ''),
+        getActiveFile: () => {
+            if (!activeFileHandle || activeFileHandle.isSettings || activeFileHandle.isPluginDetails) return null;
+            return { path: activeFileHandle.path || activeFileHandle.name, name: activeFileHandle.name };
+        },
+        goToLine: (line, column) => jumpToEditorLine(line, column),
+        openFileByPath: async (path) => {
+            const targetKey = (path || '').toLowerCase();
+            const tab = openTabs.find(t => fileKey(t).toLowerCase() === targetKey);
+            if (!tab) return false;
+            await handleOpenFile(tab);
+            return true;
+        },
+        reloadActiveFile: async () => {
+            if (!activeFileHandle || activeFileHandle.isSettings || activeFileHandle.isPluginDetails) return false;
+            try {
+                const contents = (await readFileContents(activeFileHandle)).replace(/\r\n/g, '\n');
+                folding.clear();
+                tabContentsCache.set(fileKey(activeFileHandle), contents);
+                editor.value = contents;
+                window.lastTextLength = contents.length;
+                dirtyFiles.delete(fileKey(activeFileHandle));
+                updateTabsUI();
+                runLayoutRenderEngine();
+
+                // Keep any running language server in sync with the reloaded buffer
+                const fileExt = activeFileHandle.name.split('.').pop().toLowerCase();
+                const langConfig = api.languages.get(fileExt);
+                const lspKey = langConfig ? langConfig.name.toLowerCase() : fileExt;
+                const lspEntry = api.languages.getLspClient(lspKey) || api.languages.getLspClient(fileExt);
+                if (lspEntry && lspEntry.client && lspEntry.client.isStarted) {
+                    const cachedVersions = (window.lspVersionCache = window.lspVersionCache || {});
+                    const version = cachedVersions[fileKey(activeFileHandle)] = (cachedVersions[fileKey(activeFileHandle)] || 1) + 1;
+                    lspEntry.client.didChange(activeFileHandle.path, version, contents.replace(/\r/g, ''));
+                }
+                return true;
+            } catch (err) {
+                console.error('Active file reload failed:', err);
+                return false;
+            }
+        },
+        openBottomPanelTab: (id) => window.openBottomPanelTab(id)
+    });
+
+    // Expose terminal printing for plugin status/hint messages
+    window.printToTerminal = printToTerminal;
+
     // Register standard default programming languages
     registerCoreLanguages(api);
 
@@ -2347,6 +2558,9 @@ async function bootEditor() {
         ideToolbarContainer.style.gap = '8px';
         centerTitle.appendChild(ideToolbarContainer);
     }
+
+    // Register the built-in Problems panel (bottom dock tab + status bar counter)
+    registerProblemsPanel(api);
 
     // Setup and activate Plugins manager sidebar tab panel using our Views API
     api.views.registerSidebarPanel('plugins-manager', {
@@ -2388,6 +2602,8 @@ async function bootEditor() {
     window.convertSelectToCustom(document.getElementById('snippet-lang'), () => '<i class="fa-solid fa-code" style="color: var(--accent-color);"></i>');
     if (typeof window.renderDynamicSidebarPanels === 'function') window.renderDynamicSidebarPanels();
     if (typeof window.renderDynamicSettings === 'function') window.renderDynamicSettings();
+    if (typeof window.renderDynamicBottomTabs === 'function') window.renderDynamicBottomTabs();
+    if (typeof window.renderDynamicStatusItems === 'function') window.renderDynamicStatusItems();
 
     // Apply cached style preferences
     const cachedTheme = localStorage.getItem('editor-theme-preset') || 'vs-dark';

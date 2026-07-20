@@ -1,8 +1,8 @@
 {
   "id": "pythonix-ide",
-  "name": "Pythoix IDE",
-  "description": "A comprehensive Python development environment featuring automated project scaffolding, Pyright LSP integration, and script execution runners.",
-  "version": "0.1.0",
+  "name": "Pythonix IDE",
+  "description": "A comprehensive Python development environment featuring automated project scaffolding, Pyright LSP integration, a Problems panel, code outline navigation, interpreter status, format-on-save, and script execution runners.",
+  "version": "0.3.0",
   "apiVersion": "1.0.0",
   "type": "ide",
   "main": "index.js",

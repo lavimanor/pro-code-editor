@@ -1071,6 +1071,43 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     color: var(--text-muted);
 }
 
+#bottom-tab-strip {
+    display: flex;
+    align-items: stretch;
+    height: 100%;
+    gap: 4px;
+}
+
+.bottom-tab {
+    background: none;
+    border: none;
+    border-bottom: 1px solid transparent;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    padding: 0 10px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.bottom-tab:hover {
+    color: var(--text-main);
+}
+
+.bottom-tab.active {
+    color: var(--text-main);
+    border-bottom-color: var(--accent-color);
+}
+
+.dynamic-bottom-content {
+    flex: 1;
+    overflow-y: auto;
+    display: none;
+}
+
 #close-panel-btn {
     background: none;
     border: none;

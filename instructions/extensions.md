@@ -16,8 +16,11 @@ Extensions can register:
 - Language Server Protocol (LSP) clients
 - Custom terminal script/code execution pathways (runners)
 - Sidebar panels
+- Bottom dock tabs (alongside the built-in terminal)
+- Status bar widgets
 - User preference settings (with custom dropdowns and per-extension details pages)
 - Custom diagnostic styles (linters and error displays)
+- Event subscriptions on the editor lifecycle (`api.events`) and programmatic editor control (`api.editor`)
 
 ---
 
@@ -260,7 +263,66 @@ api.views.registerSetting('neon-sparkle', {
 ```
 *Supported types: `"checkbox"`, `"text"`, `"number"`, and `"select"` (which requires an `"options": []` array).*
 
-### 5.9 Custom Diagnostic Underlines (`api.views.registerDiagnosticStyle`)
+### 5.9 Bottom Dock Tabs (`api.views.registerBottomPanelTab`)
+Registers a tab inside the bottom dock, next to the built-in TERMINAL tab (e.g. a Problems or Test Results view). Each tab owns an isolated content container that is rendered once at registration.
+
+```javascript
+api.views.registerBottomPanelTab('neon-problems', {
+    title: 'Problems', // Rendered uppercase in the tab strip
+    render: (container) => {
+        container.innerHTML = `<div style="padding:12px;">No neon leaks detected.</div>`;
+    }
+});
+
+// Reveal the dock and focus your tab programmatically:
+api.editor.openBottomPanelTab('neon-problems');
+```
+*The tab strip button receives the id `bottom-tab-[id]`, so its label can be updated live (e.g. appending a problem count).*
+
+### 5.10 Status Bar Widgets (`api.views.registerStatusBarItem`)
+Registers a live widget inside the bottom status bar. `render` is invoked with the (already-connected) element; keep a reference to update it later.
+
+```javascript
+api.views.registerStatusBarItem('neon-reactor-state', {
+    side: 'right',                       // 'left' or 'right'
+    tooltip: 'Reactor core temperature',
+    onClick: () => alert('Reactor vented.'),
+    render: (el) => {
+        el.innerHTML = `<i class="fa-solid fa-atom"></i> Core: stable`;
+    }
+});
+```
+
+### 5.11 Core Event Bus (`api.events`)
+Subscribe to editor lifecycle events. `on` returns an unsubscribe function. Plugins may also `emit` their own namespaced events to coordinate between modules.
+
+| Event | Payload |
+|---|---|
+| `file-opened` | `{ path, name, contents }` — fired when a tab is opened or focused |
+| `file-saved` | `{ path, name, contents }` |
+| `content-changed` | `{ path, name, contents }` — debounced (~300ms) while typing |
+| `diagnostics-updated` | `{ path, diagnostics: [{ start, end, line, col, severity, message }] }` |
+| `workspace-opened` | `{ path }` |
+
+```javascript
+const unsubscribe = api.events.on('file-saved', ({ name }) => {
+    console.log(`Saved: ${name}`);
+});
+```
+
+### 5.12 Editor Facade (`api.editor`)
+Inspect and drive the live editor surface:
+
+```javascript
+api.editor.getText();                    // Full (unfolded) text of the active document
+api.editor.getActiveFile();              // { path, name } or null
+api.editor.goToLine(42, 4);              // Jump caret to 1-based line (optional 0-based column)
+await api.editor.openFileByPath(path);   // Re-focus an already-open tab by absolute path
+await api.editor.reloadActiveFile();     // Re-read active file from disk (e.g. after external formatting)
+api.editor.openBottomPanelTab(id);       // Reveal the bottom dock on a registered tab
+```
+
+### 5.13 Custom Diagnostic Underlines (`api.views.registerDiagnosticStyle`)
 Registers custom syntax CSS classes for LSP warnings or error text decorators.
 
 ```javascript
