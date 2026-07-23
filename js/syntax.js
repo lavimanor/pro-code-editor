@@ -290,9 +290,35 @@ function getDiagnosticStyleClass(severity) {
 }
 
 /**
- * Escapes tags structures and applies matching bracket styles.
+ * Builds an O(log n) offset → semantic-class lookup over the active file's LSP semantic
+ * tokens (set by app.js on `window.activeSemanticTokens`). The tokens are pre-sorted by
+ * start offset and never overlap, so a plain binary search resolves each character.
  */
-function escapeAndMarkChar(char, globalIndex, highlightIndices, cursorIndex) {
+function makeSemanticLookup() {
+    const tokens = window.activeSemanticTokens;
+    if (!tokens || tokens.length === 0) return () => null;
+
+    return (idx) => {
+        let lo = 0;
+        let hi = tokens.length - 1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            const t = tokens[mid];
+            if (idx < t.start) hi = mid - 1;
+            else if (idx >= t.end) lo = mid + 1;
+            else return t.cls;
+        }
+        return null;
+    };
+}
+
+/**
+ * Escapes tags structures and applies matching bracket styles.
+ *
+ * `semClass` is the LSP-derived semantic class for this character (or null). It rides on
+ * the per-character span so its colour wins over the regex highlighter's parent span.
+ */
+function escapeAndMarkChar(char, globalIndex, highlightIndices, cursorIndex, semClass) {
     let escaped = char;
     if (char === '&') escaped = '&amp;';
     else if (char === '<') escaped = '&lt;';
@@ -313,6 +339,10 @@ function escapeAndMarkChar(char, globalIndex, highlightIndices, cursorIndex) {
 
     if (highlightIndices && highlightIndices.has(globalIndex)) {
         escaped = `<span class="bracket-highlight">${escaped}</span>`;
+    }
+
+    if (semClass) {
+        wrapperClass = wrapperClass ? `${wrapperClass} ${semClass}` : semClass;
     }
 
     // Always wrap in a data-offset span so the mouse hover probe can find the character index (Added Fix)
@@ -353,11 +383,13 @@ export function renderSyntaxHighlighting(text, fileName, highlightIndices, curso
         tokens = tokenize(cleanText, compiledGenericModel);
     }
 
+    const semanticAt = makeSemanticLookup();
+
     tokens.forEach(token => {
         let tokenHTML = '';
         for (let i = 0; i < token.text.length; i++) {
             const globalIndex = token.start + i;
-            tokenHTML += escapeAndMarkChar(token.text[i], globalIndex, highlightIndices, cursorIndex);
+            tokenHTML += escapeAndMarkChar(token.text[i], globalIndex, highlightIndices, cursorIndex, semanticAt(globalIndex));
         }
         if (token.type !== 'text') {
             backdropHTML += `<span class="syntax-${token.type}">${tokenHTML}</span>`;

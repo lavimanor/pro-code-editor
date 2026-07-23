@@ -1,0 +1,10 @@
+{
+  "id": "hyperweb-ide",
+  "name": "HyperWeb IDE",
+  "description": "A web development workspace with rich HTML, CSS and JavaScript highlighting, backed by the HTML, CSS and TypeScript language servers.",
+  "version": "0.2.0",
+  "apiVersion": "1.0.0",
+  "type": "ide",
+  "main": "index.js",
+  "icon": "icon.svg"
+}

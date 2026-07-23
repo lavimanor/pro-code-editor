@@ -139,4 +139,37 @@ export function activate(api) {
         errorClass: 'diag-error-neon',
         warningClass: 'diag-warning-neon'
     });
+
+    // 9. Contribute entries to the file explorer's right-click menu (New Addition)
+
+    // Only shown on .neon files — demonstrates the `when` predicate and a nested submenu.
+    api.menus.registerExplorerItem('neon-tools', {
+        label: 'NeonScript',
+        icon: 'fa-solid fa-bolt',
+        group: 'plugins',
+        when: (ctx) => ctx.kind === 'file' && ctx.name.endsWith('.neon'),
+        submenu: (ctx) => [
+            {
+                label: 'Validate Reactor Syntax',
+                icon: 'fa-solid fa-circle-check',
+                onClick: () => alert(`Validating ${ctx.name}...\nAll neon beams aligned.`)
+            },
+            {
+                label: 'Show Flux Report',
+                icon: 'fa-solid fa-chart-line',
+                onClick: () => alert(`Flux output for ${ctx.name}: 1.21 GW`)
+            }
+        ]
+    });
+
+    // Shown on any folder — demonstrates a dynamic label and a custom group.
+    api.menus.registerExplorerItem('neon-scan-folder', {
+        label: (ctx) => `Scan "${ctx.name}" for Neon Files`,
+        icon: 'fa-solid fa-magnifying-glass',
+        group: 'neon',
+        when: (ctx) => ctx.kind === 'directory' || ctx.isRoot,
+        onClick: (ctx) => {
+            window.printToTerminal(`[NeonScript] Scanning ${ctx.path} for .neon sources...`, 'system');
+        }
+    });
 }

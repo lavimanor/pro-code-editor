@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -579,6 +579,68 @@ ipcMain.handle('reset-runners', () => {
         console.error('Failed to reset run config default values:', err);
     }
     return true;
+});
+
+// =====================================================================
+//  Workspace Shell Integration
+// =====================================================================
+
+// Opens the OS file manager with the target selected (explorer context menu).
+ipcMain.handle('reveal-in-explorer', (event, targetPath) => {
+    if (!targetPath || !fs.existsSync(targetPath)) return false;
+    shell.showItemInFolder(targetPath);
+    return true;
+});
+
+// Opens a path with the OS default application.
+ipcMain.handle('open-path-external', async (event, targetPath) => {
+    if (!targetPath || !fs.existsSync(targetPath)) return false;
+    await shell.openPath(targetPath);
+    return true;
+});
+
+ipcMain.handle('path-exists', (event, targetPath) => {
+    return !!targetPath && fs.existsSync(targetPath);
+});
+
+/**
+ * Runs an arbitrary shell command for an IDE plugin (ctx.runCommand).
+ * Output is streamed to the renderer's terminal as it arrives so long-running
+ * builds show progress instead of blocking until completion.
+ */
+ipcMain.handle('exec-command', (event, command, options = {}) => {
+    return new Promise((resolve) => {
+        const cwd = options.cwd && fs.existsSync(options.cwd) ? options.cwd : process.cwd();
+        const stream = options.stream !== false;
+
+        const child = spawn(command, {
+            cwd,
+            shell: true,
+            windowsHide: true
+        });
+
+        let output = '';
+
+        // Mirrors the payload shape the renderer's 'run-output' listener expects.
+        const capture = (streamName) => (chunk) => {
+            const text = chunk.toString();
+            output += text;
+            if (stream && event.sender && !event.sender.isDestroyed()) {
+                event.sender.send('run-output', { stream: streamName, data: text });
+            }
+        };
+
+        child.stdout.on('data', capture('stdout'));
+        child.stderr.on('data', capture('stderr'));
+
+        child.on('error', (err) => {
+            resolve({ success: false, output: `${output}\n[Error] ${err.message}`, code: -1 });
+        });
+
+        child.on('close', (code) => {
+            resolve({ success: code === 0, output, code });
+        });
+    });
 });
 
 ipcMain.handle('focus-fix', () => {

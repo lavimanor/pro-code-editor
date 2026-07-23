@@ -100,6 +100,51 @@ export const AppConfig = {
             ctx.addToolbarButton('preview-web-info', 'Workspace Help', 'fa-solid fa-circle-question', () => {
                 alert("Welcome to the Web Creator environment!\n\nUse 'Go Live' in the status bar to view index.html static previews.");
             });
+
+            // 4. Explorer context-menu entries. Registered through ctx, so they exist only
+            //    while this IDE is selected and are removed automatically on switch away.
+            ctx.registerExplorerMenuItem('web-new-component', {
+                label: 'New Web Component…',
+                icon: 'fa-brands fa-html5',
+                group: 'new',
+                order: 10,
+                when: (target) => target.kind === 'directory' || target.isRoot,
+                onClick: async (target) => {
+                    const name = await ctx.prompt('Component name:', 'my-component');
+                    if (!name) return;
+
+                    await ctx.fs.writeFile(ctx.fs.join(target.path, `${name}.html`),
+                        `<div class="${name}">\n    <!-- ${name} markup -->\n</div>\n`);
+                    await ctx.fs.writeFile(ctx.fs.join(target.path, `${name}.css`),
+                        `.${name} {\n    display: block;\n}\n`);
+
+                    ctx.notify(`Created ${name}.html and ${name}.css`, 'success');
+                }
+            });
+
+            ctx.registerExplorerMenuItem('web-minify-hint', {
+                label: 'Show Stylesheet Stats',
+                icon: 'fa-solid fa-chart-simple',
+                group: 'plugins',
+                when: (target) => target.kind === 'file' && target.name.endsWith('.css'),
+                onClick: async (target) => {
+                    const css = await ctx.fs.readFile(target.path);
+                    const rules = (css.match(/\{/g) || []).length;
+                    ctx.notify(`${target.name}: ${rules} rules, ${css.length} bytes`, 'info');
+                }
+            });
+
+            // 5. A keybinding that only works inside this workspace.
+            ctx.registerKeybinding('ctrl+alt+w', () => {
+                ctx.notify('Web Creator IDE is the active workspace.', 'info');
+            });
+
+            // 6. A status bar widget scoped to this IDE.
+            ctx.registerStatusBarItem('web-ide-indicator', {
+                side: 'right',
+                tooltip: 'Web Creator IDE is active',
+                text: '🌐 Web Creator'
+            });
         },
         onDeactivate: () => {
             console.log("Web Creator IDE environment closed.");

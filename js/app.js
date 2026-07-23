@@ -1,16 +1,17 @@
-import { api } from './api-core.js';
+import { api, ownership } from './api-core.js';
 import { pluginManager } from './plugin-manager.js';
-import { 
+import {
     readDirectoryEntries, readFileContents, saveFileContents, verifyPermission,
     openDirectoryPicker, createDirectoryHandle, createFileHandle, removeEntryHandle,
-    resolveHandle
+    resolveHandle, renameEntryHandle, copyEntryHandle, entryExists, resolveAvailableName
 } from './fs-handler.js';
 import { renderFileTree, renderTabs } from './ui-handler.js';
+import { showContextMenu, closeContextMenu, mergeContributedItems } from './context-menu.js';
 import { renderThemeSelector, applyTheme } from './themes.js';
 import { renderIconSelector } from './icons.js';
 import { registerCoreLanguages } from './prosense-db/registry.js';
 import { renderSyntaxHighlighting, highlightCodeToHTML } from './syntax.js';
-import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBeforeCursor, hideProSense, triggerProSense } from './prosense.js';
+import { initProSense, handleProSenseInput, handleProSenseKeydown, getWordBeforeCursor, hideProSense, triggerProSense, setProSenseLspProvider } from './prosense.js';
 import { handleLineOperations } from './line-ops.js';
 import * as folding from './folding.js';
 import { initMinimapScroll } from './minimap.js';
@@ -41,6 +42,10 @@ let ipcRenderer = null;
 
 // Extensions the Run button supports
 let runnableExts = new Set();
+
+// Snapshot of the most recent tree render, so keyboard shortcuts can act on
+// whatever the explorer currently has selected.
+let lastRenderedEntries = [];
 
 // Identify a file by its absolute path
 const fileKey = (h) => (h && (h.path || h.name)) || '';
@@ -401,10 +406,10 @@ window.renderIdeSelector = () => {
         const optLabel = document.createElement('span');
         optLabel.textContent = opt.name;
         item.appendChild(optLabel);
-        item.addEventListener('click', () => {
+        item.addEventListener('click', async () => {
             if (selector._closeMenu) selector._closeMenu();
             if (opt.value !== (api.workspace.activeIdeId || 'default')) {
-                window.switchWorkspaceIDE(opt.value);
+                await window.switchWorkspaceIDE(opt.value);
                 window.renderIdeSelector();
             }
         });
@@ -415,25 +420,499 @@ window.renderIdeSelector = () => {
 };
 
 /**
- * Orchestrates seamless environment switching between installed IDEs
+ * Re-evaluates every dynamically contributed surface against the current IDE selection.
+ *
+ * Contributions are scoped by ownership: anything registered by an IDE plugin (or by an
+ * extension that IDE bundles) is only live while that IDE is selected. Switching
+ * workspaces therefore has to repaint each surface rather than merely swapping toolbars.
  */
-window.switchWorkspaceIDE = (ideId) => {
+async function syncContributedSurfaces() {
+    window.renderDynamicSidebarPanels();
+    window.renderDynamicSettings();
+    window.renderDynamicBottomTabs();
+    window.renderDynamicStatusItems();
+    window.renderDynamicRightPanels();
+    window.renderDiagnosticStyleSelector();
+
+    // A theme or icon pack shipped by an IDE disappears with it — fall back to a
+    // built-in so the editor never renders against a missing palette.
+    renderThemeSelector(themeSelector);
+    const currentTheme = localStorage.getItem('editor-theme-preset') || 'vs-dark';
+    if (!api.themes.isAvailable(currentTheme)) {
+        applyTheme('vs-dark');
+        themeSelector.value = 'vs-dark';
+        localStorage.setItem('editor-theme-preset', 'vs-dark');
+    } else {
+        themeSelector.value = currentTheme;
+    }
+
+    renderIconSelector(iconSelector);
+    if (!api.icons.isAvailable(activeIconPack)) {
+        activeIconPack = 'material';
+        localStorage.setItem('editor-icon-pack-preset', 'material');
+    }
+    iconSelector.value = activeIconPack;
+
+    // If the open sidebar view belonged to the IDE we just left, fall back to the explorer.
+    if (window.currentActiveView && window.currentActiveView !== 'explorer'
+        && !api.views.activeSidebarPanels().has(window.currentActiveView)) {
+        switchSidebarView('explorer', null);
+    }
+
+    // Run configurations and language servers are process-level; re-sync them so an
+    // inactive IDE's runners and servers stop applying.
+    api.languages.stopInactiveLspClients();
+    await api.terminal.syncActiveRunners();
+
+    await refreshExplorer();
+    runLayoutRenderEngine();
+}
+
+/**
+ * Builds the workspace context handed to an IDE's onActivate hook.
+ *
+ * Everything registered through this context is tracked as a disposable, so leaving the
+ * IDE tears down exactly what it added — no residue in the other workspaces.
+ */
+function buildIdeContext(ideId, ideConfig, disposables) {
     const ideToolbarContainer = document.getElementById('ide-toolbar-container');
-    
-    // 1. Deactivate existing active workspace
+    const isElectronApp = typeof window !== 'undefined' && window.process && window.process.type;
+    const storagePrefix = `ide-storage-${ideId}-`;
+
+    const fsNode = isElectronApp ? window.require('fs') : null;
+    const pathNode = isElectronApp ? window.require('path') : null;
+
+    const context = {
+        /** The id this IDE was registered under. */
+        id: ideId,
+
+        /** Escape hatch: the full editor API, for anything the context doesn't wrap. */
+        api,
+
+        /** Registers a teardown callback run when the user leaves this IDE. */
+        onDispose: (fn) => {
+            if (typeof fn === 'function') disposables.push(fn);
+        },
+
+        addToolbarButton: (id, label, iconClass, onClick) => {
+            const btn = document.createElement('button');
+            btn.id = `ide-btn-${id}`;
+            btn.className = 'ide-toolbar-button';
+            btn.style.background = 'var(--bg-button)';
+            btn.style.color = 'var(--text-main)';
+            btn.style.border = '1px solid var(--border-color)';
+            btn.style.padding = '4px 10px';
+            btn.style.borderRadius = '4px';
+            btn.style.fontSize = '12px';
+            btn.style.display = 'inline-flex';
+            btn.style.alignItems = 'center';
+            btn.style.gap = '6px';
+            btn.style.cursor = 'pointer';
+            btn.innerHTML = `<i class="${iconClass}"></i> ${label}`;
+            btn.addEventListener('click', onClick);
+
+            if (ideToolbarContainer) {
+                ideToolbarContainer.appendChild(btn);
+            }
+            // Returned so the IDE can mutate its own controls (label, disabled, badge…).
+            return btn;
+        },
+
+        /** Vertical rule between groups of toolbar controls. */
+        addToolbarSeparator: () => {
+            if (!ideToolbarContainer) return null;
+            const sep = document.createElement('span');
+            sep.className = 'ide-toolbar-separator';
+            ideToolbarContainer.appendChild(sep);
+            return sep;
+        },
+
+        showWelcome: (html) => showWelcomePage(html),
+        hideWelcome: () => hideWelcomePage(),
+        openFile: async (fileHandle) => {
+            if (fileHandle) {
+                await handleOpenFile(fileHandle);
+            }
+        },
+        showCustomModal: (config) => showCustomModal(config),
+
+        copyTemplateFolder: async (templateFolderName) => {
+            if (!isElectronApp || !ipcRenderer) {
+                alert('Template replication is only supported inside the Desktop Shell environment.');
+                return false;
+            }
+            if (!rootDirectoryHandle) {
+                alert('Please open a folder workspace first.');
+                return false;
+            }
+
+            printToTerminal(`[System] Replicating template directory structure: "${templateFolderName}"...`, 'system');
+            try {
+                const res = await ipcRenderer.invoke('copy-ide-template', ideId, templateFolderName, rootDirectoryHandle.path);
+                if (res && res.success) {
+                    printToTerminal('[System] Predefined folder structures copied successfully.', 'system');
+                    await refreshExplorer();
+                    return true;
+                } else {
+                    const errMsg = res ? res.error : 'Unknown replication error';
+                    printToTerminal(`[System Error] Failed to replicate structures: ${errMsg}`, 'system');
+                    return false;
+                }
+            } catch (err) {
+                printToTerminal(`[System Error] Template copy request aborted: ${err.message}`, 'system');
+                return false;
+            }
+        },
+
+        /**
+         * Project Structure Generator:
+         * Generates complete template layouts (folders, nesting, index files)
+         * recursively under the opened workspace directory handle.
+         */
+        createProjectStructure: async (structure) => {
+            if (!rootDirectoryHandle) {
+                alert('Please open a folder workspace first.');
+                return { success: false, files: {} };
+            }
+
+            printToTerminal('[System] Generating project template directory structures...', 'system');
+            const createdFiles = {};
+            try {
+                // 1. Generate folder architectures recursively
+                if (structure.folders) {
+                    for (const folder of structure.folders) {
+                        const segments = folder.split('/');
+                        let currentDir = rootDirectoryHandle;
+                        for (const segment of segments) {
+                            if (segment) {
+                                currentDir = await createDirectoryHandle(currentDir, segment);
+                            }
+                        }
+                    }
+                }
+
+                // 2. Generate and write nested index templates
+                if (structure.files) {
+                    for (const [filePath, contents] of Object.entries(structure.files)) {
+                        const segments = filePath.split('/');
+                        const fileName = segments.pop();
+
+                        let currentDir = rootDirectoryHandle;
+                        for (const segment of segments) {
+                            if (segment) {
+                                currentDir = await createDirectoryHandle(currentDir, segment);
+                            }
+                        }
+
+                        const newFileHandle = await createFileHandle(currentDir, fileName);
+                        await saveFileContents(newFileHandle, contents);
+                        createdFiles[filePath] = newFileHandle;
+                    }
+                }
+
+                printToTerminal('[System] Project structure generated successfully!', 'system');
+
+                // Refresh folder tree visualization on creation completion
+                await refreshExplorer();
+
+                return { success: true, files: createdFiles };
+            } catch (err) {
+                printToTerminal(`[System Error] Failed to generate project architecture: ${err.message}`, 'system');
+                console.error(err);
+                return { success: false, files: {} };
+            }
+        },
+
+        // =============================================================
+        //  Contributed UI — all torn down automatically on deactivate
+        // =============================================================
+
+        /** Adds an icon + panel to the activity bar. Config: { iconClass, title, render(el) }. */
+        registerSidebarPanel: (id, config) => {
+            api.views.registerSidebarPanel(id, config);
+            disposables.push(() => api.views.unregisterSidebarPanel(id));
+        },
+
+        /** Adds a tab beside TERMINAL in the bottom dock. Config: { title, render(el) }. */
+        registerBottomPanelTab: (id, config) => {
+            api.views.registerBottomPanelTab(id, config);
+            disposables.push(() => api.views.unregisterBottomPanelTab(id));
+        },
+
+        /** Adds a status bar widget. Config: { side, tooltip, onClick, render(el) | text }. */
+        registerStatusBarItem: (id, config) => {
+            api.views.registerStatusBarItem(id, config);
+            disposables.push(() => api.views.unregisterStatusBarItem(id));
+        },
+
+        /**
+         * Adds a tool window to the right-hand dock (IntelliJ-style). Gets its own toggle
+         * button on the right activity bar. Config: { title, iconClass, render(el) }.
+         */
+        registerRightPanel: (id, config) => {
+            api.views.registerRightPanel(id, config);
+            disposables.push(() => api.views.unregisterRightPanel(id));
+        },
+
+        /** Adds a settings field to this IDE's Details page. */
+        registerSetting: (id, config) => {
+            api.views.registerSetting(id, { pluginId: ideId, ...config });
+            disposables.push(() => api.views.unregisterSetting(id));
+        },
+
+        /** Adds an entry to the file explorer's right-click menu. */
+        registerExplorerMenuItem: (id, config) => {
+            api.menus.registerExplorerItem(id, config);
+            disposables.push(() => api.menus.unregisterExplorerItem(id));
+        },
+
+        /** Adds an entry to the code editor's right-click menu. */
+        registerEditorMenuItem: (id, config) => {
+            api.menus.registerEditorItem(id, config);
+            disposables.push(() => api.menus.unregisterEditorItem(id));
+        },
+
+        // =============================================================
+        //  Language, theme and execution contributions
+        // =============================================================
+
+        registerLanguage: (langId, config) => api.languages.register(langId, config),
+        registerHighlighter: (langId, rules) => api.languages.registerHighlighter(langId, rules),
+        registerLspClient: (ext, command, args, initOptions, features) =>
+            api.languages.registerLspClient(ext, command, args, initOptions, features),
+
+        registerTheme: (id, config) => {
+            api.themes.register(id, config);
+            renderThemeSelector(themeSelector);
+        },
+        registerIconPack: (id, config) => {
+            api.icons.register(id, config);
+            renderIconSelector(iconSelector);
+        },
+
+        /** Contributes a run configuration for a file extension. */
+        registerRunner: async (ext, runnerConfig) => {
+            await api.terminal.registerRunner(ext, runnerConfig);
+        },
+
+        /** Injects a stylesheet scoped to this IDE's lifetime. */
+        injectCSS: (css) => {
+            const style = document.createElement('style');
+            style.dataset.ideStyle = ideId;
+            style.textContent = css;
+            document.head.appendChild(style);
+            disposables.push(() => style.remove());
+            return style;
+        },
+
+        /**
+         * Binds a keyboard shortcut, e.g. 'ctrl+shift+b'. Only fires while this IDE
+         * is selected, and is unbound on deactivate.
+         */
+        registerKeybinding: (combo, handler) => {
+            const parts = combo.toLowerCase().split('+').map(p => p.trim());
+            const key = parts[parts.length - 1];
+            const needsCtrl = parts.includes('ctrl') || parts.includes('cmd');
+            const needsShift = parts.includes('shift');
+            const needsAlt = parts.includes('alt');
+
+            const listener = (e) => {
+                if (e.key.toLowerCase() !== key) return;
+                if (needsCtrl !== (e.ctrlKey || e.metaKey)) return;
+                if (needsShift !== e.shiftKey) return;
+                if (needsAlt !== e.altKey) return;
+                e.preventDefault();
+                try { handler(); } catch (err) { console.error(err); }
+            };
+            document.addEventListener('keydown', listener);
+            disposables.push(() => document.removeEventListener('keydown', listener));
+        },
+
+        /** Subscribes to an editor event for this IDE's lifetime. */
+        on: (event, callback) => {
+            const off = api.events.on(event, callback);
+            disposables.push(off);
+            return off;
+        },
+
+        /** Broadcasts a custom event to any subscriber. */
+        emit: (event, payload) => api.events.emit(event, payload),
+
+        // =============================================================
+        //  Workspace, filesystem and process access
+        // =============================================================
+
+        get workspace() {
+            return {
+                rootPath: rootDirectoryHandle ? rootDirectoryHandle.path : null,
+                name: rootDirectoryHandle ? rootDirectoryHandle.name : null,
+                isOpen: !!rootDirectoryHandle,
+                handle: rootDirectoryHandle
+            };
+        },
+
+        /** Direct workspace filesystem access (desktop shell only for path helpers). */
+        fs: {
+            readFile: async (relOrAbsPath) => {
+                const target = resolveWorkspacePath(relOrAbsPath, pathNode);
+                if (!target || !fsNode) return null;
+                return fsNode.readFileSync(target, 'utf8');
+            },
+            writeFile: async (relOrAbsPath, contents) => {
+                const target = resolveWorkspacePath(relOrAbsPath, pathNode);
+                if (!target || !fsNode) return false;
+                fsNode.mkdirSync(pathNode.dirname(target), { recursive: true });
+                fsNode.writeFileSync(target, contents, 'utf8');
+                await refreshExplorer();
+                return true;
+            },
+            exists: (relOrAbsPath) => {
+                const target = resolveWorkspacePath(relOrAbsPath, pathNode);
+                return !!target && !!fsNode && fsNode.existsSync(target);
+            },
+            list: (relOrAbsPath = '.') => {
+                const target = resolveWorkspacePath(relOrAbsPath, pathNode);
+                if (!target || !fsNode || !fsNode.existsSync(target)) return [];
+                return fsNode.readdirSync(target).map(name => ({
+                    name,
+                    path: pathNode.join(target, name),
+                    kind: fsNode.statSync(pathNode.join(target, name)).isDirectory() ? 'directory' : 'file'
+                }));
+            },
+            mkdir: async (relOrAbsPath) => {
+                const target = resolveWorkspacePath(relOrAbsPath, pathNode);
+                if (!target || !fsNode) return false;
+                fsNode.mkdirSync(target, { recursive: true });
+                await refreshExplorer();
+                return true;
+            },
+            delete: async (relOrAbsPath) => {
+                const target = resolveWorkspacePath(relOrAbsPath, pathNode);
+                if (!target || !fsNode || !fsNode.existsSync(target)) return false;
+                fsNode.rmSync(target, { recursive: true, force: true });
+                await refreshExplorer();
+                return true;
+            },
+            join: (...segments) => (pathNode ? pathNode.join(...segments) : segments.join('/'))
+        },
+
+        /**
+         * Runs a shell command in the workspace directory.
+         * Returns { success, output, code }. Output streams to the terminal by default.
+         */
+        runCommand: async (command, options = {}) => api.terminal.exec(command, options),
+
+        /** Terminal surface controls. */
+        terminal: {
+            print: (text, type = 'system') => printToTerminal(text, type),
+            show: () => {
+                if (bottomPanel.classList.contains('hidden-panel')) toggleTerminal();
+                window.switchBottomTab('terminal');
+            },
+            setDirectory: (dirPath) => updateTerminalPrompt(dirPath)
+        },
+
+        /** Live editor surface (text, selection, caret, diagnostics). */
+        editor: api.editor,
+
+        // =============================================================
+        //  Persistence and user interaction
+        // =============================================================
+
+        /** Per-IDE persistent key/value store, namespaced so IDEs cannot collide. */
+        storage: {
+            get: (key, fallback = null) => {
+                const raw = localStorage.getItem(storagePrefix + key);
+                if (raw === null) return fallback;
+                try { return JSON.parse(raw); } catch (e) { return raw; }
+            },
+            set: (key, value) => localStorage.setItem(storagePrefix + key, JSON.stringify(value)),
+            remove: (key) => localStorage.removeItem(storagePrefix + key),
+            keys: () => Object.keys(localStorage)
+                .filter(k => k.startsWith(storagePrefix))
+                .map(k => k.slice(storagePrefix.length))
+        },
+
+        /** Transient toast in the corner of the window. */
+        notify: (message, type = 'info') => showToast(message, type),
+
+        /** Themed single-field prompt. Resolves to the entered string, or null. */
+        prompt: (title, placeholder = '') => showPrompt(title, placeholder),
+
+        confirm: (message) => Promise.resolve(confirm(message)),
+
+        /** Themed list picker. Resolves to the chosen value, or null. */
+        quickPick: async (choices, config = {}) => {
+            const options = choices.map(c => (typeof c === 'string' ? c : c.label));
+            const result = await showCustomModal({
+                title: config.title || 'Select an option',
+                inputs: [{
+                    id: 'choice',
+                    label: config.label || '',
+                    type: 'select',
+                    options,
+                    defaultValue: config.defaultValue || options[0]
+                }],
+                okLabel: config.okLabel || 'Select',
+                cancelLabel: 'Cancel'
+            });
+            if (!result) return null;
+            const picked = choices.find(c => (typeof c === 'string' ? c : c.label) === result.choice);
+            return typeof picked === 'string' ? picked : (picked ? picked.value ?? picked.label : null);
+        },
+
+        /** Repaints the file explorer (after generating files outside the ctx helpers). */
+        refreshExplorer: () => refreshExplorer()
+    };
+
+    return context;
+}
+
+/** Resolves a workspace-relative path against the open folder. */
+function resolveWorkspacePath(inputPath, pathNode) {
+    if (!inputPath) return null;
+    if (!pathNode) return null;
+    if (pathNode.isAbsolute(inputPath)) return inputPath;
+    if (!rootDirectoryHandle || !rootDirectoryHandle.path) return null;
+    return pathNode.join(rootDirectoryHandle.path, inputPath);
+}
+
+/**
+ * Orchestrates seamless environment switching between installed IDEs.
+ *
+ * Leaving an IDE disposes everything it contributed during activation, and
+ * `syncContributedSurfaces` re-evaluates the registries so contributions belonging to
+ * plugins that ship *other* IDEs stop applying. The result: an IDE's functionality is
+ * live only while it is the selected workspace.
+ */
+window.switchWorkspaceIDE = async (ideId) => {
+    const ideToolbarContainer = document.getElementById('ide-toolbar-container');
+
+    // 1. Deactivate the outgoing workspace and dispose everything it registered.
     const oldIde = api.workspace.getActiveIDE();
-    if (oldIde && typeof oldIde.onDeactivate === 'function') {
-        try { oldIde.onDeactivate(); } catch (err) { console.error(err); }
+    if (oldIde) {
+        if (typeof oldIde.onDeactivate === 'function') {
+            try { oldIde.onDeactivate(); } catch (err) { console.error(err); }
+        }
+        if (Array.isArray(oldIde._disposables)) {
+            oldIde._disposables.forEach(dispose => {
+                try { dispose(); } catch (err) { console.error('[IDE] Teardown failed:', err); }
+            });
+            oldIde._disposables = [];
+        }
     }
 
     // Flush workspace context elements
     if (ideToolbarContainer) ideToolbarContainer.innerHTML = '';
     hideWelcomePage();
+    closeContextMenu();
 
     if (ideId === 'default' || !ideId) {
         api.workspace.activeIdeId = null;
         printToTerminal('[System] Switched to normal editor mode.', 'system');
         editor.placeholder = "// Select or create a file from the explorer to begin...";
+        await syncContributedSurfaces();
+        api.events.emit('ide-changed', { ideId: null, name: 'Normal Editor' });
         return;
     }
 
@@ -443,134 +922,26 @@ window.switchWorkspaceIDE = (ideId) => {
     api.workspace.activeIdeId = ideId;
     printToTerminal(`[System] Switched to ${newIde.name} environment.`, 'system');
 
-    const isElectronApp = typeof window !== 'undefined' && window.process && window.process.type;
+    // 2. Bring this IDE's contributions online before running its activation hook,
+    //    so the hook observes a workspace that already reflects its own registrations.
+    await syncContributedSurfaces();
 
-        // Build the dynamic workspace context passed to the IDE active hooks
-        const context = {
-            addToolbarButton: (id, label, iconClass, onClick) => {
-                const btn = document.createElement('button');
-                btn.id = `ide-btn-${id}`;
-                btn.className = 'ide-toolbar-button';
-                btn.style.background = 'var(--bg-button)';
-                btn.style.color = 'var(--text-main)';
-                btn.style.border = '1px solid var(--border-color)';
-                btn.style.padding = '4px 10px';
-                btn.style.borderRadius = '4px';
-                btn.style.fontSize = '12px';
-                btn.style.display = 'inline-flex';
-                btn.style.alignItems = 'center';
-                btn.style.gap = '6px';
-                btn.style.cursor = 'pointer';
-                btn.innerHTML = `<i class="${iconClass}"></i> ${label}`;
-                btn.addEventListener('click', onClick);
-                
-                if (ideToolbarContainer) {
-                    ideToolbarContainer.appendChild(btn);
-                }
-            },
-            showWelcome: (html) => showWelcomePage(html),
-            hideWelcome: () => hideWelcomePage(),
-            openFile: async (fileHandle) => {
-                if (fileHandle) {
-                    await handleOpenFile(fileHandle);
-                }
-            },
-            showCustomModal: (config) => showCustomModal(config),
-            copyTemplateFolder: async (templateFolderName) => {
-                if (!isElectronApp || !ipcRenderer) {
-                    alert('Template replication is only supported inside the Desktop Shell environment.');
-                    return false;
-                }
-                if (!rootDirectoryHandle) {
-                    alert('Please open a folder workspace first.');
-                    return false;
-                }
+    // 3. Run the activation hook under this plugin's ownership, so anything it
+    //    registers is scoped to the IDE rather than leaking into the plain editor.
+    const disposables = [];
+    newIde._disposables = disposables;
+    const context = buildIdeContext(ideId, newIde, disposables);
 
-                printToTerminal(`[System] Replicating template directory structure: "${templateFolderName}"...`, 'system');
-                try {
-                    const res = await ipcRenderer.invoke('copy-ide-template', ideId, templateFolderName, rootDirectoryHandle.path);
-                    if (res && res.success) {
-                        printToTerminal('[System] Predefined folder structures copied successfully.', 'system');
-                        await refreshExplorer();
-                        return true;
-                    } else {
-                        const errMsg = res ? res.error : 'Unknown replication error';
-                        printToTerminal(`[System Error] Failed to replicate structures: ${errMsg}`, 'system');
-                        return false;
-                    }
-                } catch (err) {
-                    printToTerminal(`[System Error] Template copy request aborted: ${err.message}`, 'system');
-                    return false;
-                }
-            },
-
-            /**
-             * Project Structure Generator:
-             * Generates complete template layouts (folders, nesting, index files) 
-             * recursively under the opened workspace directory handle.
-             */
-            createProjectStructure: async (structure) => {
-                if (!rootDirectoryHandle) {
-                    alert('Please open a folder workspace first.');
-                    return { success: false, files: {} };
-                }
-                
-                printToTerminal('[System] Generating project template directory structures...', 'system');
-                const createdFiles = {};
-                try {
-                    // 1. Generate folder architectures recursively
-                    if (structure.folders) {
-                        for (const folder of structure.folders) {
-                            const segments = folder.split('/');
-                            let currentDir = rootDirectoryHandle;
-                            for (const segment of segments) {
-                                if (segment) {
-                                    currentDir = await createDirectoryHandle(currentDir, segment);
-                                }
-                            }
-                        }
-                    }
-                    
-                    // 2. Generate and write nested index templates
-                    if (structure.files) {
-                        for (const [filePath, contents] of Object.entries(structure.files)) {
-                            const segments = filePath.split('/');
-                            const fileName = segments.pop();
-                            
-                            let currentDir = rootDirectoryHandle;
-                            for (const segment of segments) {
-                                if (segment) {
-                                    currentDir = await createDirectoryHandle(currentDir, segment);
-                                }
-                            }
-                            
-                            const newFileHandle = await createFileHandle(currentDir, fileName);
-                            await saveFileContents(newFileHandle, contents);
-                            createdFiles[filePath] = newFileHandle;
-                        }
-                    }
-                    
-                    printToTerminal('[System] Project structure generated successfully!', 'system');
-                    
-                    // Refresh folder tree visualization on creation completion
-                    await refreshExplorer();
-                    
-                    return { success: true, files: createdFiles };
-                } catch (err) {
-                    printToTerminal(`[System Error] Failed to generate project architecture: ${err.message}`, 'system');
-                    console.error(err);
-                    return { success: false, files: {} };
-                }
-            }
-        };
-
-    // Invoke workspace entry hooks
     if (typeof newIde.onActivate === 'function') {
-        try { 
-            newIde.onActivate(context); 
-        } catch (err) { 
-            console.error(err); 
+        const pluginId = ownership.findPluginForIde(ideId);
+        ownership.beginActivation({ pluginId: pluginId || ideId, type: 'ide', name: newIde.name });
+        try {
+            newIde.onActivate(context);
+        } catch (err) {
+            console.error(err);
             printToTerminal(`[System Error] IDE activation failed: ${err.message}`, 'system');
+        } finally {
+            ownership.endActivation();
         }
     }
 
@@ -578,6 +949,8 @@ window.switchWorkspaceIDE = (ideId) => {
     if (openTabs.length === 0 && typeof newIde.getWelcomePageHTML === 'function') {
         showWelcomePage(newIde.getWelcomePageHTML());
     }
+
+    api.events.emit('ide-changed', { ideId, name: newIde.name });
 };
 
 /**
@@ -589,7 +962,7 @@ window.renderDynamicSettings = () => {
 
     document.querySelectorAll('.dynamic-setting-item').forEach(el => el.remove());
 
-    api.views.customSettings.forEach((config, id) => {
+    api.views.activeCustomSettings().forEach((config, id) => {
         // Skip plugin-specific configurations so they only render on their own Details page
         if (config.pluginId) return;
 
@@ -687,7 +1060,7 @@ window.renderDiagnosticStyleSelector = () => {
     selector.appendChild(intellijOpt);
 
     // Dynamic style selections added via plugins
-    api.views.diagnosticStyles.forEach((config, id) => {
+    api.views.activeDiagnosticStyles().forEach((config, id) => {
         const opt = document.createElement('option');
         opt.value = id;
         opt.textContent = config.name || id;
@@ -716,7 +1089,7 @@ window.renderDynamicSidebarPanels = () => {
 
     document.querySelectorAll('.dynamic-activity-icon').forEach(el => el.remove());
 
-    api.views.sidebarPanels.forEach((config, id) => {
+    api.views.activeSidebarPanels().forEach((config, id) => {
         const btn = document.createElement('button');
         btn.className = 'activity-icon dynamic-activity-icon';
         btn.id = `act-btn-${id}`;
@@ -767,7 +1140,8 @@ window.renderDynamicBottomTabs = () => {
     document.querySelectorAll('.dynamic-bottom-tab').forEach(el => el.remove());
     document.querySelectorAll('.dynamic-bottom-content').forEach(el => el.remove());
 
-    api.views.bottomPanelTabs.forEach((config, id) => {
+    const liveTabs = api.views.activeBottomPanelTabs();
+    liveTabs.forEach((config, id) => {
         const btn = document.createElement('button');
         btn.className = 'bottom-tab dynamic-bottom-tab';
         btn.id = `bottom-tab-${id}`;
@@ -786,8 +1160,9 @@ window.renderDynamicBottomTabs = () => {
         }
     });
 
-    // Fall back to the terminal if the previously active tab no longer exists.
-    if (activeBottomTab !== 'terminal' && !api.views.bottomPanelTabs.has(activeBottomTab)) {
+    // Fall back to the terminal if the previously active tab is gone or belongs to an
+    // IDE that is no longer selected.
+    if (activeBottomTab !== 'terminal' && !liveTabs.has(activeBottomTab)) {
         activeBottomTab = 'terminal';
     }
     switchBottomTab(activeBottomTab);
@@ -799,7 +1174,7 @@ window.renderDynamicBottomTabs = () => {
 window.renderDynamicStatusItems = () => {
     document.querySelectorAll('.dynamic-status-item').forEach(el => el.remove());
 
-    api.views.statusBarItems.forEach((config, id) => {
+    api.views.activeStatusBarItems().forEach((config, id) => {
         const container = document.querySelector(config.side === 'left' ? '.status-left' : '.status-right');
         if (!container) return;
 
@@ -824,6 +1199,108 @@ window.renderDynamicStatusItems = () => {
             item.textContent = config.text;
         }
     });
+};
+
+// =====================================================================
+//  Right Tool-Window Dock Engine
+//  Hosts extension/IDE-contributed panels (api.views.registerRightPanel). Each panel
+//  gets a toggle button on the right activity bar; the whole dock stays hidden until at
+//  least one panel is live. Rendered content is cached per panel so switching between
+//  tools — and future stateful agents — keeps their state alive.
+// =====================================================================
+let activeRightPanel = null;
+
+function collapseRightPanel() {
+    const rightPanel = document.getElementById('right-panel');
+    if (rightPanel) rightPanel.classList.add('right-collapsed');
+    document.querySelectorAll('.right-activity-icon').forEach(b => b.classList.remove('active'));
+}
+
+function openRightPanel(id) {
+    const config = api.views.activeRightPanels().get(id);
+    if (!config) return;
+
+    const rightPanel = document.getElementById('right-panel');
+    const title = document.getElementById('right-panel-title');
+    if (rightPanel) rightPanel.classList.remove('right-collapsed');
+    activeRightPanel = id;
+
+    document.querySelectorAll('.right-activity-icon').forEach(b => {
+        b.classList.toggle('active', b.id === `right-act-${id}`);
+    });
+    document.querySelectorAll('.right-panel-content').forEach(c => {
+        c.style.display = c.id === `right-content-${id}` ? 'block' : 'none';
+    });
+    if (title) title.textContent = (config.title || id).toUpperCase();
+
+    // Render lazily on first reveal; cached afterwards so state survives toggling.
+    const content = document.getElementById(`right-content-${id}`);
+    if (content && content.dataset.rendered !== 'true') {
+        content.dataset.rendered = 'true';
+        try {
+            config.render(content);
+        } catch (err) {
+            content.innerHTML = `<div style="padding:16px; color:#ef5350;">Error rendering panel: ${err.message}</div>`;
+        }
+    }
+}
+
+function toggleRightPanel(id) {
+    const rightPanel = document.getElementById('right-panel');
+    const isCollapsed = !rightPanel || rightPanel.classList.contains('right-collapsed');
+    if (activeRightPanel === id && !isCollapsed) {
+        collapseRightPanel();
+    } else {
+        openRightPanel(id);
+    }
+}
+window.toggleRightPanel = toggleRightPanel;
+
+window.renderDynamicRightPanels = () => {
+    const rightBar = document.getElementById('right-activity-bar');
+    const body = document.getElementById('right-panel-body');
+    if (!rightBar || !body) return;
+
+    rightBar.innerHTML = '';
+    body.innerHTML = '';
+
+    const panels = api.views.activeRightPanels();
+
+    // No live panels → hide the whole dock (activity bar + collapsed panel).
+    if (panels.size === 0) {
+        rightBar.classList.add('hidden');
+        collapseRightPanel();
+        activeRightPanel = null;
+        return;
+    }
+    rightBar.classList.remove('hidden');
+
+    panels.forEach((config, id) => {
+        const btn = document.createElement('button');
+        btn.className = 'activity-icon right-activity-icon';
+        btn.id = `right-act-${id}`;
+        btn.title = config.title || id;
+        btn.innerHTML = `<i class="${config.iconClass || 'fa-solid fa-window-maximize'}"></i>`;
+        btn.addEventListener('click', () => toggleRightPanel(id));
+        rightBar.appendChild(btn);
+
+        const content = document.createElement('div');
+        content.className = 'right-panel-content';
+        content.id = `right-content-${id}`;
+        content.style.display = 'none';
+        content.dataset.rendered = 'false';
+        body.appendChild(content);
+    });
+
+    // Restore the previously open panel if it survived the re-render; else stay collapsed.
+    // The container was just rebuilt, so openRightPanel re-runs its render().
+    const previous = activeRightPanel;
+    activeRightPanel = null;
+    if (previous && panels.has(previous)) {
+        openRightPanel(previous);
+    } else {
+        collapseRightPanel();
+    }
 };
 
 // Monitors active tab file extensions to show/hide the "Go Live" server button
@@ -1007,6 +1484,190 @@ function offsetToLspPosition(text, offset) {
     return { line: Math.max(0, lines.length - 1), character: 0 };
 }
 
+/**
+ * Maps the LSP standard semantic token *type names* onto the editor's `sem-*` CSS
+ * classes (defined in style.css). Types we don't map are dropped, so the regex
+ * highlighter keeps colouring those characters — the semantic layer only overrides
+ * what the server can speak to authoritatively.
+ */
+const SEMANTIC_TYPE_TO_CLASS = {
+    namespace: 'sem-namespace',
+    type: 'sem-type', class: 'sem-class', enum: 'sem-type',
+    interface: 'sem-type', struct: 'sem-type', typeParameter: 'sem-type',
+    parameter: 'sem-parameter', variable: 'sem-variable', property: 'sem-property',
+    enumMember: 'sem-property', event: 'sem-property',
+    function: 'sem-function', method: 'sem-function', macro: 'sem-function',
+    keyword: 'sem-keyword', modifier: 'sem-keyword',
+    comment: 'sem-comment', string: 'sem-string', regexp: 'sem-string',
+    number: 'sem-number', operator: 'sem-operator', decorator: 'sem-decorator'
+};
+
+/**
+ * Decodes the flat integer array from `textDocument/semanticTokens/full` into absolute
+ * `{ start, end, cls }` offset ranges against `fileText`.
+ *
+ * The wire format packs five ints per token — deltaLine, deltaStartChar, length,
+ * tokenTypeIndex, tokenModifiers — where line/char deltas are relative to the previous
+ * token (char resets to absolute whenever the line advances). See the LSP spec.
+ */
+function decodeSemanticTokens(data, legend, fileText) {
+    if (!Array.isArray(data) || !legend || !Array.isArray(legend.tokenTypes)) return [];
+
+    const out = [];
+    let line = 0;
+    let char = 0;
+
+    for (let i = 0; i + 4 < data.length; i += 5) {
+        const deltaLine = data[i];
+        const deltaChar = data[i + 1];
+        const length = data[i + 2];
+        const typeIdx = data[i + 3];
+
+        if (deltaLine > 0) {
+            line += deltaLine;
+            char = deltaChar;
+        } else {
+            char += deltaChar;
+        }
+
+        const typeName = legend.tokenTypes[typeIdx];
+        const cls = typeName && SEMANTIC_TYPE_TO_CLASS[typeName];
+        if (!cls || length <= 0) continue;
+
+        const start = lspPositionToOffset(fileText, line, char);
+        out.push({ start, end: start + length, cls });
+    }
+
+    // The renderer binary-searches these, so keep them ordered by start offset.
+    out.sort((a, b) => a.start - b.start);
+    return out;
+}
+
+// One in-flight request at a time is enough; a burst of edits collapses to the last.
+let semanticTokensTimer = null;
+
+/**
+ * Requests semantic tokens for `fileHandle`, decodes them against the buffer as the
+ * server currently sees it, caches the result and repaints if it is the active file.
+ * A no-op unless the client opted into the feature *and* the server advertises it.
+ */
+async function fetchSemanticTokens(lspEntry, fileHandle) {
+    if (!lspEntry || !lspEntry.client || !fileHandle) return;
+    if (!lspEntry.features || !lspEntry.features.semanticTokens) return;
+
+    const client = lspEntry.client;
+    if (!client.isStarted || !client.hasSemanticTokens()) return;
+
+    const legend = client.getSemanticTokensLegend();
+    if (!legend) return;
+
+    // Snapshot the exact text the offsets will be measured against. This matches what
+    // the most recent didChange sent, so the decoded ranges line up with the backdrop.
+    const isActive = activeFileHandle && fileKey(activeFileHandle) === fileKey(fileHandle);
+    const fileText = isActive
+        ? folding.getFullText(editor.value).replace(/\r/g, '')
+        : (tabContentsCache.get(fileKey(fileHandle)) || '').replace(/\r/g, '');
+
+    try {
+        const res = await client.semanticTokens(fileHandle.path);
+        const data = res && res.result ? res.result.data : null;
+        const decoded = decodeSemanticTokens(data, legend, fileText);
+
+        const key = (fileHandle.path || '').toLowerCase();
+        window.semanticTokensCache.set(key, decoded);
+
+        const activePath = activeFileHandle && activeFileHandle.path ? activeFileHandle.path.toLowerCase() : '';
+        if (key === activePath) {
+            window.activeSemanticTokens = decoded;
+            runLayoutRenderEngine();
+        }
+    } catch (err) {
+        // A server that lied about its capability (or died mid-request) just leaves the
+        // regex highlighting in place — nothing to recover.
+    }
+}
+
+/**
+ * Debounced entry point used after edits; pass `immediate` on file open for a fast
+ * first paint. Safe to call for any file — it self-cancels when the feature is off.
+ */
+function scheduleSemanticTokens(lspEntry, fileHandle, immediate = false) {
+    if (!lspEntry || !lspEntry.features || !lspEntry.features.semanticTokens) return;
+    if (semanticTokensTimer) clearTimeout(semanticTokensTimer);
+    if (immediate) {
+        fetchSemanticTokens(lspEntry, fileHandle);
+        return;
+    }
+    semanticTokensTimer = setTimeout(() => fetchSemanticTokens(lspEntry, fileHandle), 350);
+}
+
+// LSP CompletionItemKind (1–25) → the ProSense item `type`, which drives its icon/colour.
+const LSP_COMPLETION_KIND_TO_TYPE = {
+    1: 'variable', 2: 'method', 3: 'function', 4: 'function', 5: 'property',
+    6: 'variable', 7: 'class', 8: 'class', 9: 'module', 10: 'property',
+    11: 'variable', 12: 'variable', 13: 'class', 14: 'keyword', 15: 'snippet',
+    16: 'variable', 17: 'variable', 18: 'variable', 19: 'variable', 20: 'property',
+    21: 'variable', 22: 'class', 23: 'property', 24: 'keyword', 25: 'class'
+};
+
+/**
+ * Rewrites an LSP snippet (`${1:name}`, `$2`, `$0`) into the plain insert text ProSense
+ * understands, keeping default values as literal text and preserving the final caret
+ * stop as ProSense's single `$0` marker.
+ */
+function sanitizeLspSnippet(text) {
+    if (!text) return text;
+    const CARET = '\u0000'; // temporary sentinel for the final tab stop
+    let out = text
+        .replace(/\$\{0(?::([^}]*))?\}/g, CARET) // ${0} / ${0:default} → caret
+        .replace(/\$0/g, CARET)                   // $0 → caret
+        .replace(/\$\{\d+:([^}]*)\}/g, '$1')     // ${n:default} → default
+        .replace(/\$\{\d+\}/g, '')                // ${n} → ''
+        .replace(/\$\d+/g, '');                   // $n → ''
+
+    const caretIdx = out.indexOf(CARET);
+    out = out.split(CARET).join('');
+    if (caretIdx !== -1) out = out.slice(0, caretIdx) + '$0' + out.slice(caretIdx);
+    return out;
+}
+
+/**
+ * Normalises an LSP completion response (either a bare item array or a CompletionList)
+ * into ProSense items. Capped so a server returning thousands of symbols can't stall the
+ * fuzzy ranker.
+ */
+function mapLspCompletions(res) {
+    if (!res || !res.result) return [];
+    const raw = Array.isArray(res.result) ? res.result : (res.result.items || []);
+
+    const out = [];
+    for (const item of raw) {
+        if (out.length >= 200) break;
+        const label = typeof item.label === 'string'
+            ? item.label
+            : (item.label && item.label.label);
+        if (!label) continue;
+
+        let insertText = item.insertText
+            || (item.textEdit && item.textEdit.newText)
+            || label;
+        if (item.insertTextFormat === 2) insertText = sanitizeLspSnippet(insertText);
+
+        const detail = item.detail
+            || (item.labelDetails && (item.labelDetails.detail || item.labelDetails.description))
+            || '';
+
+        out.push({
+            label,
+            insertText,
+            type: LSP_COMPLETION_KIND_TO_TYPE[item.kind] || 'variable',
+            detail,
+            source: 'lsp'
+        });
+    }
+    return out;
+}
+
 function escapeHTML(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -1082,6 +1743,11 @@ function renderHoverMarkdown(md, defaultLang) {
 // Global storage caches for active workspace diagnostics (Added Fix)
 window.activeDiagnosticsCache = new Map();
 window.activeDiagnostics = [];
+
+// Per-file decoded LSP semantic tokens, keyed by lowercased path, plus the slice for
+// the currently open file (read by js/syntax.js while painting the backdrop).
+window.semanticTokensCache = new Map();
+window.activeSemanticTokens = [];
 
 // Active hover trackers to prevent cursor movement flickers (Added Fix)
 window.lastHoverOffset = -1;
@@ -1218,6 +1884,9 @@ editor.addEventListener('input', () => {
             // the full document (folded interiors reconstructed) so ranges stay correct.
             const cleanText = folding.getFullText(editor.value).replace(/\r/g, '');
             lspEntry.client.didChange(activeFileHandle.path, currentVersion, cleanText);
+
+            // Refresh semantic highlighting off the edited buffer (debounced).
+            scheduleSemanticTokens(lspEntry, activeFileHandle);
         }
     }
 
@@ -1504,6 +2173,13 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         handleGoToLine();
     }
+    // Ctrl/Cmd+W — Close the active tab
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'w') {
+        if (activeFileHandle) {
+            e.preventDefault();
+            handleCloseTab(activeFileHandle);
+        }
+    }
 });
 
 // Keep the status-bar cursor readout live as the selection moves (keyboard or mouse).
@@ -1576,11 +2252,18 @@ function runLayoutRenderEngine() {
     // offsets (which track the full document), so suppress squiggles for this paint.
     const foldsActive = folding.hasFolds();
     const savedDiagnostics = window.activeDiagnostics;
-    if (foldsActive) window.activeDiagnostics = [];
+    const savedSemanticTokens = window.activeSemanticTokens;
+    if (foldsActive) {
+        window.activeDiagnostics = [];
+        window.activeSemanticTokens = [];
+    }
 
     const backdropHTML = renderSyntaxHighlighting(text, activeName, highlightIndices, markerIndex);
 
-    if (foldsActive) window.activeDiagnostics = savedDiagnostics;
+    if (foldsActive) {
+        window.activeDiagnostics = savedDiagnostics;
+        window.activeSemanticTokens = savedSemanticTokens;
+    }
 
     editorBackdrop.innerHTML = folding.decorateBackdrop(backdropHTML) + (text.endsWith('\n') ? '\n ' : ' ');
 
@@ -1740,12 +2423,27 @@ async function refreshExplorer() {
     const entries = await readDirectoryEntries(rootDirectoryHandle);
     renderFileTree(
         fileTreeContainer, entries, selectedPath, expandedFolders, activeIconPack,
-        handleOpenFile, handleFolderCollapseToggle, handleProjectItemDelete, handleMoveItem
+        handleOpenFile, handleFolderCollapseToggle, handleProjectItemDelete, handleMoveItem,
+        handleExplorerContextMenu
     );
+    lastRenderedEntries = entries;
+}
+
+function findEntryByHandle(handle, entries = lastRenderedEntries) {
+    if (!handle) return null;
+    const key = fileKey(handle);
+    for (const entry of entries) {
+        if (fileKey(entry.handle) === key) return entry;
+        if (entry.children) {
+            const hit = findEntryByHandle(handle, entry.children);
+            if (hit) return hit;
+        }
+    }
+    return null;
 }
 
 function updateTabsUI() {
-    renderTabs(tabContainer, openTabs, activeFileHandle, dirtyFiles, activeIconPack, handleOpenFile, handleCloseTab, handleTabReorder);
+    renderTabs(tabContainer, openTabs, activeFileHandle, dirtyFiles, activeIconPack, handleOpenFile, handleCloseTab, handleTabReorder, handleTabContextMenu);
 }
 
 async function handleFolderCollapseToggle(pathString, directoryItem) {
@@ -1875,6 +2573,9 @@ async function handleOpenFile(fileHandle) {
         // Restore cached diagnostics for this file if they exist (Added Fix)
         const activePath = activeFileHandle.path ? activeFileHandle.path.toLowerCase() : '';
         window.activeDiagnostics = window.activeDiagnosticsCache.get(activePath) || [];
+        // Restore any semantic tokens computed on a previous visit for an instant paint;
+        // a fresh request below supersedes them once the server responds.
+        window.activeSemanticTokens = window.semanticTokensCache.get(activePath) || [];
 
         updateGoLiveVisibility(activeFileHandle.name);
         updateRunButtonVisibility(activeFileHandle.name);
@@ -1911,7 +2612,10 @@ async function handleOpenFile(fileHandle) {
                     // Ensure no \r characters are sent to the LSP on open (Added Fix)
                     const cleanContents = contents.replace(/\r/g, '');
                     client.didOpen(activeFileHandle.path, lspLangId, cleanContents);
-                    
+
+                    // Paint semantic highlighting as soon as the server can answer.
+                    scheduleSemanticTokens(lspEntry, activeFileHandle, true);
+
                     // Register the diagnostics listener exactly once per client instance
                     if (!client.diagnosticsRegistered) {
                         client.diagnosticsRegistered = true;
@@ -2123,71 +2827,133 @@ async function handleMoveItem(sourceItem, targetDirectoryHandle) {
     }
 }
 
-function handleCloseTab(fileHandle) {
-    const key = fileKey(fileHandle);
-    if (dirtyFiles.has(key)) {
-        const confirmClose = confirm('"' + fileHandle.name + '" contains unsaved changes. Close anyway?');
-        if (!confirmClose) return;
-    }
-    openTabs = openTabs.filter(t => fileKey(t) !== key);
-    dirtyFiles.delete(key);
-    tabContentsCache.delete(key);
+/**
+ * Resets the workspace to its "no open tab" state: blank, disabled editor, hidden
+ * settings/details panels, restored editor viewports, and the IDE welcome splash when one
+ * is registered. Shared by single- and bulk-close paths so they stay in lock-step.
+ */
+function resetToEmptyEditorState() {
+    activeFileHandle = null;
+    selectedHandle = null;
+    editor.value = '';
+    editor.disabled = true;
+    btnSaveFile.disabled = true;
+    filePathDisplay.textContent = rootDirectoryHandle ? "Workspace: " + rootDirectoryHandle.name : 'Workspace Closed';
+    updateGoLiveVisibility('');
+    updateRunButtonVisibility('');
 
-    if (activeFileHandle && fileKey(activeFileHandle) === key) {
+    const settingsPanel = document.getElementById('settings-panel');
+    settingsPanel.classList.add('hidden');
+    settingsPanel.style.display = 'none';
+
+    const detailsPanel = document.getElementById('plugin-details-panel');
+    detailsPanel.classList.add('hidden');
+    detailsPanel.style.display = 'none';
+
+    document.getElementById('line-gutter').style.display = 'flex';
+    document.getElementById('editor-surface-box').style.display = 'block';
+    document.getElementById('minimap-gutter').style.display = 'block';
+
+    runLayoutRenderEngine();
+
+    // Reactivate the IDE welcome splash if no open records remain.
+    const activeIde = api.workspace.getActiveIDE();
+    if (activeIde && typeof activeIde.getWelcomePageHTML === 'function') {
+        showWelcomePage(activeIde.getWelcomePageHTML());
+    }
+}
+
+/**
+ * Closes a set of tabs in one pass. Prompts a single confirmation covering every dirty
+ * tab in the set, then reactivates a surviving tab (or the empty state) if the active tab
+ * was among those closed. Returns false when the user cancels the confirmation.
+ */
+function closeTabsBatch(handles) {
+    const keys = new Set();
+    handles.forEach(h => { const k = fileKey(h); if (k) keys.add(k); });
+    if (keys.size === 0) return false;
+
+    // One confirmation for the whole batch when any target has unsaved changes.
+    const dirtyHandles = handles.filter(h => dirtyFiles.has(fileKey(h)));
+    if (dirtyHandles.length === 1) {
+        if (!confirm('"' + dirtyHandles[0].name + '" contains unsaved changes. Close anyway?')) return false;
+    } else if (dirtyHandles.length > 1) {
+        if (!confirm(`${dirtyHandles.length} tabs contain unsaved changes. Close them anyway?`)) return false;
+    }
+
+    const activeClosed = activeFileHandle && keys.has(fileKey(activeFileHandle));
+
+    openTabs = openTabs.filter(t => !keys.has(fileKey(t)));
+    keys.forEach(k => { dirtyFiles.delete(k); tabContentsCache.delete(k); });
+
+    if (activeClosed) {
         if (openTabs.length > 0) {
             handleOpenFile(openTabs[openTabs.length - 1]);
         } else {
-            activeFileHandle = null;
-            selectedHandle = null;
-            editor.value = '';
-            editor.disabled = true;
-            btnSaveFile.disabled = true;
-            filePathDisplay.textContent = rootDirectoryHandle ? "Workspace: " + rootDirectoryHandle.name : 'Workspace Closed';
-            updateGoLiveVisibility('');
-            updateRunButtonVisibility('');
-            
-            // Hide settings panel
-            const settingsPanel = document.getElementById('settings-panel');
-            settingsPanel.classList.add('hidden');
-            settingsPanel.style.display = 'none';
-            
-            const detailsPanel = document.getElementById('plugin-details-panel');
-            detailsPanel.classList.add('hidden');
-            detailsPanel.style.display = 'none';
-
-            document.getElementById('line-gutter').style.display = 'flex';
-            document.getElementById('editor-surface-box').style.display = 'block';
-            document.getElementById('minimap-gutter').style.display = 'block';
-            
-            runLayoutRenderEngine();
-
-            // Reactivate IDE welcome splash view on close tabs events if no open records remain
-            const activeIde = api.workspace.getActiveIDE();
-            if (activeIde && typeof activeIde.getWelcomePageHTML === 'function') {
-                showWelcomePage(activeIde.getWelcomePageHTML());
-            }
-        }
-    } else if (openTabs.length === 0) {
-        updateGoLiveVisibility('');
-        updateRunButtonVisibility('');
-        
-        // Hide settings panel
-        const settingsPanel = document.getElementById('settings-panel');
-        settingsPanel.classList.add('hidden');
-        settingsPanel.style.display = 'none';
-
-        // FIX: Restore standard editor layout viewports so the workspace is visible
-        document.getElementById('line-gutter').style.display = 'flex';
-        document.getElementById('editor-surface-box').style.display = 'block';
-        document.getElementById('minimap-gutter').style.display = 'block';
-
-        const activeIde = api.workspace.getActiveIDE();
-        if (activeIde && typeof activeIde.getWelcomePageHTML === 'function') {
-            showWelcomePage(activeIde.getWelcomePageHTML());
+            resetToEmptyEditorState();
         }
     }
     updateTabsUI();
     refreshExplorer();
+    return true;
+}
+
+function handleCloseTab(fileHandle) {
+    closeTabsBatch([fileHandle]);
+}
+
+/**
+ * Builds and opens the tab strip's right-click menu: single close plus the bulk
+ * operations (others / to the right / saved / all), then path helpers.
+ */
+function handleTabContextMenu(event, fileHandle) {
+    const key = fileKey(fileHandle);
+    const idx = openTabs.findIndex(t => fileKey(t) === key);
+    const tabsToRight = idx === -1 ? [] : openTabs.slice(idx + 1);
+    const otherTabs = openTabs.filter(t => fileKey(t) !== key);
+    const savedTabs = openTabs.filter(t => !dirtyFiles.has(fileKey(t)));
+    const diskPath = fileHandle.path && !String(fileHandle.path).startsWith('virtual://')
+        ? fileHandle.path
+        : (fileHandle.handle && fileHandle.handle.path) || null;
+
+    const items = [
+        {
+            label: 'Close', icon: 'fa-regular fa-rectangle-xmark', shortcut: 'Ctrl+W',
+            onClick: () => handleCloseTab(fileHandle)
+        },
+        {
+            label: 'Close Others', icon: 'fa-regular fa-clone',
+            disabled: otherTabs.length === 0,
+            onClick: () => closeTabsBatch(otherTabs)
+        },
+        {
+            label: 'Close to the Right', icon: 'fa-solid fa-angles-right',
+            disabled: tabsToRight.length === 0,
+            onClick: () => closeTabsBatch(tabsToRight)
+        },
+        {
+            label: 'Close Saved', icon: 'fa-regular fa-floppy-disk',
+            disabled: savedTabs.length === 0,
+            onClick: () => closeTabsBatch(savedTabs)
+        },
+        {
+            label: 'Close All', icon: 'fa-solid fa-xmark',
+            disabled: openTabs.length === 0,
+            onClick: () => closeTabsBatch([...openTabs])
+        },
+        { separator: true },
+        {
+            label: 'Copy Path', icon: 'fa-regular fa-copy',
+            disabled: !diskPath,
+            onClick: () => copyTextToClipboard(diskPath)
+        },
+        ...(isElectronApp && diskPath ? [{
+            label: 'Reveal in File Explorer', icon: 'fa-regular fa-folder-open',
+            onClick: () => revealInSystemExplorer(diskPath)
+        }] : [])
+    ];
+
+    showContextMenu(event.clientX, event.clientY, items);
 }
 
 async function handleProjectItemDelete(item) {
@@ -2197,9 +2963,332 @@ async function handleProjectItemDelete(item) {
         handleCloseTab(item.handle);
         await removeEntryHandle(item.parent, item.name);
         await refreshExplorer();
+        api.events.emit('file-deleted', {
+            path: item.handle.path || item.name,
+            name: item.name,
+            kind: item.kind
+        });
     } catch (err) {
         alert('FileSystem execution access context authorization denial parameters triggered.');
     }
+}
+
+// =====================================================================
+//  Explorer Context Menu
+// =====================================================================
+
+// Pending cut/copy operation shared between the explorer menu and paste targets.
+let explorerClipboard = null; // { item, mode: 'copy' | 'cut' }
+
+/**
+ * Resolves the directory an action should target: the folder itself when a directory was
+ * clicked, otherwise the file's parent. Falls back to the workspace root for empty space.
+ */
+function resolveTargetDirectory(item) {
+    if (!item) return rootDirectoryHandle;
+    return item.kind === 'directory' ? item.handle : item.parent;
+}
+
+async function handleContextCreate(item, kind) {
+    const targetDir = resolveTargetDirectory(item) || rootDirectoryHandle;
+    if (!targetDir) return;
+
+    const isFile = kind === 'file';
+    const name = await showPrompt(
+        `New ${isFile ? 'file' : 'folder'} inside [${targetDir.name}]:`,
+        isFile ? 'filename.ext' : 'folder-name'
+    );
+    if (!name) return;
+
+    if (await entryExists(targetDir, name)) {
+        alert(`"${name}" already exists in ${targetDir.name}.`);
+        return;
+    }
+
+    try {
+        if (isFile) {
+            const handle = await createFileHandle(targetDir, name);
+            // Reveal the new file by expanding the folder it landed in.
+            if (item && item.kind === 'directory') expandedFolders.add(item.treePath);
+            await refreshExplorer();
+            await handleOpenFile(handle);
+            api.events.emit('file-created', { path: handle.path || name, name, kind: 'file' });
+        } else {
+            const handle = await createDirectoryHandle(targetDir, name);
+            if (item && item.kind === 'directory') expandedFolders.add(item.treePath);
+            await refreshExplorer();
+            api.events.emit('file-created', { path: handle.path || name, name, kind: 'directory' });
+        }
+    } catch (err) {
+        alert(`Could not create "${name}": ${err.message}`);
+    }
+}
+
+async function handleContextRename(item) {
+    if (!item) return;
+    const newName = await showPrompt(`Rename "${item.name}" to:`, item.name);
+    if (!newName || newName === item.name) return;
+
+    if (await entryExists(item.parent, newName)) {
+        alert(`"${newName}" already exists in this folder.`);
+        return;
+    }
+
+    try {
+        const oldKey = fileKey(item.handle);
+        const newHandle = await renameEntryHandle(item.parent, item, newName);
+
+        // Re-point any open tab at the renamed file so edits keep saving to the right path.
+        if (item.kind === 'file') {
+            const tabIdx = openTabs.findIndex(t => fileKey(t) === oldKey);
+            if (tabIdx !== -1) openTabs[tabIdx] = newHandle;
+
+            if (tabContentsCache.has(oldKey)) {
+                tabContentsCache.set(fileKey(newHandle), tabContentsCache.get(oldKey));
+                tabContentsCache.delete(oldKey);
+            }
+            if (dirtyFiles.has(oldKey)) {
+                dirtyFiles.delete(oldKey);
+                dirtyFiles.add(fileKey(newHandle));
+            }
+            if (activeFileHandle && fileKey(activeFileHandle) === oldKey) {
+                activeFileHandle = newHandle;
+                selectedHandle = newHandle;
+                filePathDisplay.textContent = newHandle.path || newHandle.name;
+            }
+        } else {
+            // A renamed folder invalidates the cached paths of everything beneath it.
+            const oldPath = item.handle.path;
+            const newPath = newHandle.path;
+            if (oldPath && newPath) {
+                openTabs.forEach(tab => {
+                    if (tab.path && tab.path.startsWith(oldPath)) {
+                        tab.path = newPath + tab.path.slice(oldPath.length);
+                    }
+                });
+            }
+            expandedFolders.clear();
+        }
+
+        await refreshExplorer();
+        updateTabsUI();
+        api.events.emit('file-renamed', {
+            oldPath: oldKey,
+            path: newHandle.path || newName,
+            name: newName,
+            kind: item.kind
+        });
+    } catch (err) {
+        alert(`Rename failed: ${err.message}`);
+    }
+}
+
+async function handleContextDuplicate(item) {
+    if (!item) return;
+    try {
+        const name = await resolveAvailableName(item.parent, item.name, item.kind);
+        await copyEntryHandle(item, item.parent, name);
+        await refreshExplorer();
+    } catch (err) {
+        alert(`Duplicate failed: ${err.message}`);
+    }
+}
+
+async function handleContextPaste(item) {
+    if (!explorerClipboard) return;
+    const targetDir = resolveTargetDirectory(item) || rootDirectoryHandle;
+    if (!targetDir) return;
+
+    const source = explorerClipboard.item;
+    try {
+        const taken = await entryExists(targetDir, source.name);
+
+        if (explorerClipboard.mode === 'cut') {
+            // A move cannot silently rename — refuse rather than clobber the destination.
+            if (taken) {
+                alert(`"${source.name}" already exists in ${targetDir.name}.`);
+                return;
+            }
+            await handleMoveItem(source, targetDir);
+            explorerClipboard = null;
+        } else {
+            // Pasting a copy beside itself gets a " copy" suffix instead of colliding.
+            const name = taken
+                ? await resolveAvailableName(targetDir, source.name, source.kind)
+                : source.name;
+            await copyEntryHandle(source, targetDir, name);
+            await refreshExplorer();
+        }
+    } catch (err) {
+        alert(`Paste failed: ${err.message}`);
+    }
+}
+
+async function copyTextToClipboard(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (err) {
+        // Clipboard API is unavailable when the window isn't focused; fall back to a
+        // throwaway textarea so the action still succeeds.
+        const scratch = document.createElement('textarea');
+        scratch.value = text;
+        scratch.style.position = 'fixed';
+        scratch.style.opacity = '0';
+        document.body.appendChild(scratch);
+        scratch.select();
+        try { document.execCommand('copy'); } catch (e) { /* best effort */ }
+        scratch.remove();
+    }
+}
+
+function revealInSystemExplorer(targetPath) {
+    if (ipcRenderer && targetPath) {
+        ipcRenderer.invoke('reveal-in-explorer', targetPath);
+    }
+}
+
+function openPathInTerminal(item) {
+    const dir = item ? (item.kind === 'directory' ? item.handle.path : (item.parent && item.parent.path))
+                     : (rootDirectoryHandle && rootDirectoryHandle.path);
+    if (!dir) return;
+    if (bottomPanel.classList.contains('hidden-panel')) toggleTerminal();
+    updateTerminalPrompt(dir);
+    printToTerminal(`[System] Terminal working directory set to ${dir}`, 'system');
+}
+
+/**
+ * Builds and opens the explorer right-click menu.
+ * `item` is null when the user right-clicked empty space (the workspace root).
+ */
+function handleExplorerContextMenu(event, item) {
+    if (!rootDirectoryHandle) return;
+
+    const isEmptyArea = !item;
+    const isDirectory = !isEmptyArea && item.kind === 'directory';
+    const isFile = !isEmptyArea && item.kind === 'file';
+    const canCreateInside = isEmptyArea || isDirectory;
+    const isElectronApp = !!ipcRenderer;
+
+    // Right-clicking selects, matching the behaviour of clicking an entry.
+    if (item) {
+        selectedHandle = item.handle;
+        selectedDirectoryContext = resolveTargetDirectory(item);
+    } else {
+        selectedDirectoryContext = rootDirectoryHandle;
+    }
+
+    const ctx = {
+        item: item || null,
+        kind: isEmptyArea ? 'root' : item.kind,
+        name: isEmptyArea ? rootDirectoryHandle.name : item.name,
+        path: isEmptyArea ? rootDirectoryHandle.path : (item.handle.path || item.name),
+        handle: isEmptyArea ? rootDirectoryHandle : item.handle,
+        parent: isEmptyArea ? null : item.parent,
+        isRoot: isEmptyArea,
+        isEmptyArea,
+        rootPath: rootDirectoryHandle.path || '',
+        api,
+        refresh: () => refreshExplorer()
+    };
+
+    const builtinGroups = {
+        new: canCreateInside ? [
+            {
+                label: 'New File…', icon: 'fa-regular fa-file', _order: 1,
+                onClick: () => handleContextCreate(item, 'file')
+            },
+            {
+                label: 'New Folder…', icon: 'fa-regular fa-folder', _order: 2,
+                onClick: () => handleContextCreate(item, 'directory')
+            }
+        ] : [],
+
+        open: isFile ? [
+            {
+                label: 'Open', icon: 'fa-regular fa-file-lines', _order: 1,
+                onClick: () => handleOpenFile(item)
+            }
+        ] : [],
+
+        clipboard: isEmptyArea ? [
+            {
+                label: 'Paste', icon: 'fa-regular fa-paste', _order: 3,
+                disabled: !explorerClipboard,
+                onClick: () => handleContextPaste(item)
+            }
+        ] : [
+            {
+                label: 'Cut', icon: 'fa-solid fa-scissors', _order: 1,
+                onClick: () => { explorerClipboard = { item, mode: 'cut' }; }
+            },
+            {
+                label: 'Copy', icon: 'fa-regular fa-copy', _order: 2,
+                onClick: () => { explorerClipboard = { item, mode: 'copy' }; }
+            },
+            {
+                label: 'Paste', icon: 'fa-regular fa-paste', _order: 3,
+                disabled: !explorerClipboard,
+                onClick: () => handleContextPaste(item)
+            }
+        ],
+
+        edit: isEmptyArea ? [] : [
+            {
+                label: 'Rename…', icon: 'fa-solid fa-i-cursor', shortcut: 'F2', _order: 1,
+                onClick: () => handleContextRename(item)
+            },
+            {
+                label: 'Duplicate', icon: 'fa-regular fa-clone', _order: 2,
+                onClick: () => handleContextDuplicate(item)
+            }
+        ],
+
+        copy: isEmptyArea ? [] : [
+            {
+                label: 'Copy Path', icon: 'fa-regular fa-copy', _order: 1,
+                onClick: () => copyTextToClipboard(item.handle.path || item.name)
+            },
+            {
+                label: 'Copy Relative Path', icon: 'fa-solid fa-diagram-project', _order: 2,
+                onClick: async () => {
+                    const parts = await resolveHandle(rootDirectoryHandle, item.handle);
+                    await copyTextToClipboard(parts ? parts.join('/') : item.name);
+                }
+            }
+        ],
+
+        reveal: [
+            ...(isElectronApp ? [{
+                label: 'Reveal in File Explorer', icon: 'fa-regular fa-folder-open', _order: 1,
+                onClick: () => revealInSystemExplorer(ctx.path)
+            }] : []),
+            ...(canCreateInside ? [{
+                label: 'Open in Terminal', icon: 'fa-solid fa-terminal', _order: 2,
+                onClick: () => openPathInTerminal(item)
+            }] : []),
+            {
+                label: 'Refresh Explorer', icon: 'fa-solid fa-arrows-rotate', _order: 3,
+                onClick: () => refreshExplorer()
+            },
+            ...(isEmptyArea ? [{
+                label: 'Collapse All Folders', icon: 'fa-solid fa-compress', _order: 4,
+                onClick: async () => { expandedFolders.clear(); await refreshExplorer(); }
+            }] : [])
+        ],
+
+        danger: isEmptyArea ? [] : [
+            {
+                label: 'Delete', icon: 'fa-regular fa-trash-can', danger: true, shortcut: 'Del', _order: 1,
+                onClick: () => handleProjectItemDelete(item)
+            }
+        ]
+    };
+
+    // '*' marks where plugin-invented groups are spliced in — Delete always stays last.
+    const groupOrder = ['new', 'open', 'clipboard', 'edit', 'copy', 'reveal', 'plugins', '*', 'danger'];
+    const items = mergeContributedItems(builtinGroups, groupOrder, api.menus.getExplorerItems(), ctx);
+
+    showContextMenu(event.clientX, event.clientY, items);
 }
 
 function handleTabReorder(sourceKey, targetKey) {
@@ -2211,6 +3300,42 @@ function handleTabReorder(sourceKey, targetKey) {
         updateTabsUI();
     }
 }
+
+/**
+ * Transient corner notification. Stacks vertically and self-dismisses.
+ * `type` is one of 'info' | 'success' | 'warning' | 'error'.
+ */
+function showToast(message, type = 'info') {
+    let stack = document.getElementById('toast-stack');
+    if (!stack) {
+        stack = document.createElement('div');
+        stack.id = 'toast-stack';
+        document.body.appendChild(stack);
+    }
+
+    const icons = {
+        info: 'fa-circle-info',
+        success: 'fa-circle-check',
+        warning: 'fa-triangle-exclamation',
+        error: 'fa-circle-exclamation'
+    };
+
+    const toast = document.createElement('div');
+    toast.className = `editor-toast toast-${type}`;
+    toast.innerHTML = `<i class="fa-solid ${icons[type] || icons.info}"></i><span></span>`;
+    toast.querySelector('span').textContent = message;
+    stack.appendChild(toast);
+
+    // Allow the entry transition to run before scheduling the exit.
+    requestAnimationFrame(() => toast.classList.add('visible'));
+    setTimeout(() => {
+        toast.classList.remove('visible');
+        setTimeout(() => toast.remove(), 250);
+    }, 3200);
+
+    return toast;
+}
+window.showEditorToast = showToast;
 
 function showPrompt(title, placeholder = '') {
     return new Promise((resolve) => {
@@ -2443,6 +3568,9 @@ const closePanelBtn = document.getElementById('close-panel-btn');
 if (actTerminal) actTerminal.addEventListener('click', toggleTerminal);
 if (closePanelBtn) closePanelBtn.addEventListener('click', toggleTerminal);
 
+const closeRightPanelBtn = document.getElementById('close-right-panel-btn');
+if (closeRightPanelBtn) closeRightPanelBtn.addEventListener('click', collapseRightPanel);
+
 const terminalTabBtn = document.getElementById('bottom-tab-terminal');
 if (terminalTabBtn) terminalTabBtn.addEventListener('click', () => switchBottomTab('terminal'));
 
@@ -2459,6 +3587,30 @@ if (prosenseToggle) {
 // Initializing the minimap & ProSense components
 initMinimapScroll(editor, minimapGutter, minimapIndicator);
 initProSense(editor, editorSurfaceBox);
+
+// Feed ProSense with real language-server completions for any active file whose LSP
+// client opted into `completion` and whose server advertises the capability. Returns an
+// empty list otherwise, so ProSense simply falls back to its local suggestions.
+setProSenseLspProvider(async (fileName) => {
+    if (!activeFileHandle || !activeFileHandle.path) return [];
+
+    const fileExt = activeFileHandle.name.split('.').pop().toLowerCase();
+    const langConfig = api.languages.get(fileExt);
+    const lspKey = langConfig ? langConfig.name.toLowerCase() : fileExt;
+    const lspEntry = api.languages.getLspClient(lspKey) || api.languages.getLspClient(fileExt);
+
+    if (!lspEntry || !lspEntry.features || !lspEntry.features.completion) return [];
+    const client = lspEntry.client;
+    if (!client || !client.isStarted || !client.hasCompletion()) return [];
+
+    const pos = offsetToLspPosition(editor.value, editor.selectionStart);
+    try {
+        const res = await client.completion(activeFileHandle.path, pos.line, pos.character);
+        return mapLspCompletions(res);
+    } catch (err) {
+        return [];
+    }
+});
 
 // Initialize code folding — fold state is view-only and never dirties the buffer,
 // so its onChange just repaints and keeps the diagnostics length tracker in sync.
@@ -2526,6 +3678,7 @@ async function bootEditor() {
                     const cachedVersions = (window.lspVersionCache = window.lspVersionCache || {});
                     const version = cachedVersions[fileKey(activeFileHandle)] = (cachedVersions[fileKey(activeFileHandle)] || 1) + 1;
                     lspEntry.client.didChange(activeFileHandle.path, version, contents.replace(/\r/g, ''));
+                    scheduleSemanticTokens(lspEntry, activeFileHandle, true);
                 }
                 return true;
             } catch (err) {
@@ -2533,7 +3686,67 @@ async function bootEditor() {
                 return false;
             }
         },
-        openBottomPanelTab: (id) => window.openBottomPanelTab(id)
+        openBottomPanelTab: (id) => window.openBottomPanelTab(id),
+
+        setText: (text) => {
+            if (!activeFileHandle) return;
+            folding.clear();
+            editor.value = text;
+            window.lastTextLength = text.length;
+            dirtyFiles.add(fileKey(activeFileHandle));
+            updateTabsUI();
+            runLayoutRenderEngine();
+        },
+
+        getSelection: () => ({
+            start: editor.selectionStart,
+            end: editor.selectionEnd,
+            text: editor.value.slice(editor.selectionStart, editor.selectionEnd)
+        }),
+
+        replaceSelection: (text) => {
+            const start = editor.selectionStart;
+            const end = editor.selectionEnd;
+            editor.value = editor.value.slice(0, start) + text + editor.value.slice(end);
+            editor.selectionStart = editor.selectionEnd = start + text.length;
+            if (activeFileHandle) dirtyFiles.add(fileKey(activeFileHandle));
+            updateTabsUI();
+            runLayoutRenderEngine();
+        },
+
+        insertAtCursor: (text) => {
+            const pos = editor.selectionStart;
+            editor.value = editor.value.slice(0, pos) + text + editor.value.slice(pos);
+            editor.selectionStart = editor.selectionEnd = pos + text.length;
+            if (activeFileHandle) dirtyFiles.add(fileKey(activeFileHandle));
+            updateTabsUI();
+            runLayoutRenderEngine();
+        },
+
+        getCursorPosition: () => {
+            const upToCaret = editor.value.slice(0, editor.selectionStart);
+            const lines = upToCaret.split('\n');
+            return { line: lines.length, column: lines[lines.length - 1].length + 1 };
+        },
+
+        getLanguageId: () => {
+            if (!activeFileHandle || !activeFileHandle.name) return '';
+            const parts = activeFileHandle.name.split('.');
+            return parts.length > 1 ? parts.pop().toLowerCase() : '';
+        },
+
+        save: async () => {
+            await handleSaveFile();
+            return true;
+        },
+
+        getOpenFiles: () => openTabs
+            .filter(t => !t.isSettings && !t.isPluginDetails)
+            .map(t => ({ path: t.path || t.name, name: t.name })),
+
+        setDiagnostics: (path, diagnostics) => {
+            api.events.emit('diagnostics-updated', { path, diagnostics });
+        }
     });
 
     // Expose terminal printing for plugin status/hint messages
@@ -2604,13 +3817,18 @@ async function bootEditor() {
     if (typeof window.renderDynamicSettings === 'function') window.renderDynamicSettings();
     if (typeof window.renderDynamicBottomTabs === 'function') window.renderDynamicBottomTabs();
     if (typeof window.renderDynamicStatusItems === 'function') window.renderDynamicStatusItems();
+    if (typeof window.renderDynamicRightPanels === 'function') window.renderDynamicRightPanels();
 
-    // Apply cached style preferences
-    const cachedTheme = localStorage.getItem('editor-theme-preset') || 'vs-dark';
+    // Apply cached style preferences. The editor boots into plain mode, so a theme or
+    // icon pack shipped by an IDE isn't live yet — fall back to a built-in rather than
+    // rendering against a palette that no longer applies.
+    let cachedTheme = localStorage.getItem('editor-theme-preset') || 'vs-dark';
+    if (!api.themes.isAvailable(cachedTheme)) cachedTheme = 'vs-dark';
     themeSelector.value = cachedTheme;
     applyTheme(cachedTheme);
 
     // Apply cached icon preference
+    if (!api.icons.isAvailable(activeIconPack)) activeIconPack = 'material';
     iconSelector.value = activeIconPack;
 
     // Set up interactive window splitting layout controls
@@ -2642,6 +3860,11 @@ function initLayoutResizing() {
     const savedTerminalHeight = localStorage.getItem('layout-terminal-height');
     if (savedTerminalHeight) {
         bottomPanel.style.height = `${savedTerminalHeight}px`;
+    }
+    const rightPanel = document.getElementById('right-panel');
+    const savedRightWidth = localStorage.getItem('layout-right-panel-width');
+    if (rightPanel && savedRightWidth) {
+        rightPanel.style.width = `${savedRightWidth}px`;
     }
 
     // 1. Configure Sidebar Vertical Resizer
@@ -2739,7 +3962,54 @@ function initLayoutResizing() {
         window.addEventListener('mouseup', onMouseUp);
     });
 
-    // 3. Configure Safeguard Window Clamps
+    // 3. Configure Right Tool-Window Vertical Resizer
+    if (rightPanel) {
+        const resizerRight = document.createElement('div');
+        resizerRight.id = 'resizer-right-panel';
+        resizerRight.className = 'resizer-v';
+        // Sits between the workspace and the right dock; CSS hides it when collapsed.
+        rightPanel.parentNode.insertBefore(resizerRight, rightPanel);
+
+        resizerRight.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startWidth = rightPanel.offsetWidth;
+            resizerRight.classList.add('dragging');
+            document.body.classList.add('layout-resizing');
+            document.body.style.cursor = 'col-resize';
+
+            let newWidth = startWidth;
+            let updatePending = false;
+
+            const onMouseMove = (moveEvent) => {
+                const deltaX = moveEvent.clientX - startX;
+                // The dock is anchored to the right edge, so pulling LEFT widens it.
+                newWidth = Math.max(200, Math.min(640, startWidth - deltaX));
+
+                if (!updatePending) {
+                    updatePending = true;
+                    requestAnimationFrame(() => {
+                        rightPanel.style.width = `${newWidth}px`;
+                        updatePending = false;
+                    });
+                }
+            };
+
+            const onMouseUp = () => {
+                resizerRight.classList.remove('dragging');
+                document.body.classList.remove('layout-resizing');
+                document.body.style.cursor = '';
+                localStorage.setItem('layout-right-panel-width', newWidth);
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+            };
+
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+        });
+    }
+
+    // 4. Configure Safeguard Window Clamps
     window.addEventListener('resize', () => {
         // Automatically scale down the sidebar if it exceeds half of the window viewport
         const maxAllowedWidth = window.innerWidth / 2;

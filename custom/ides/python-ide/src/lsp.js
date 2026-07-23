@@ -6,7 +6,11 @@ export function registerPythonLsp(api) {
     const pyrightCmd = isWin ? 'pyright-langserver.cmd' : 'pyright-langserver';
 
     try {
-        // Wire the 'pyright-langserver' executable to the '.py' file extension
+        // Wire the 'pyright-langserver' executable to the '.py' file extension.
+        // The 5th argument opts this server into semantic highlighting and feeding its
+        // completions into ProSense. Pyright (Pyright, not the closed-source Pylance)
+        // advertises both `semanticTokensProvider` and `completionProvider`, so the
+        // editor uses them; a server that didn't would be skipped automatically.
         api.languages.registerLspClient('py', pyrightCmd, ['--stdio'], {
             python: {
                 analysis: {
@@ -16,8 +20,11 @@ export function registerPythonLsp(api) {
                     typeCheckingMode: "basic"       // "off", "basic", or "strict"
                 }
             }
+        }, {
+            semanticTokens: true,
+            completion: true
         });
-        
+
         console.log(`Python LSP client registered using command: ${pyrightCmd}`);
     } catch (error) {
         console.error("Could not register Python LSP client. Error context:", error);

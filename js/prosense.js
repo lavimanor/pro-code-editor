@@ -10,19 +10,37 @@ let isOpen = false;
 let delayTimeout = null;
 let latestExtraBuffers = [];
 
+// Optional async source of language-server completions, injected by the host (app.js).
+// Signature: (fileName) => Promise<Array<{label, insertText, type, detail, source:'lsp'}>>.
+let lspProvider = null;
+// Monotonic token: any dismissal or newer evaluation invalidates an in-flight LSP fetch.
+let lspRequestSeq = 0;
+
 const TYPE_META = {
     tag:       { icon: 'fa-code',    color: '#e34c26' },
     attribute: { icon: 'fa-cube',    color: '#2196f3' },
     property:  { icon: 'fa-wrench',  color: '#4caf50' },
     variable:  { icon: 'fa-cube',    color: '#9c27b0' },
     class:     { icon: 'fa-shapes',  color: '#ff9800' },
+    type:      { icon: 'fa-shapes',  color: '#ff9800' },
     function:  { icon: 'fa-bolt',    color: '#ffeb3b' },
+    method:    { icon: 'fa-bolt',    color: '#ffeb3b' },
+    module:    { icon: 'fa-cube',    color: '#9c27b0' },
     keyword:   { icon: 'fa-key',     color: '#569cd6' },
     snippet:   { icon: 'fa-scroll',  color: '#c586c0' }
 };
 const DEFAULT_TYPE_META = { icon: 'fa-bolt', color: '#ffeb3b' };
 
-const SOURCE_BOOST = { local: 220, custom: 150, db: 0, extern: -90 };
+const SOURCE_BOOST = { lsp: 240, local: 220, custom: 150, db: 0, extern: -90 };
+
+/**
+ * Registers the async LSP completion source. The host supplies a function that resolves
+ * to completion items for the active file (or an empty list when no server applies);
+ * ProSense merges them into whatever the local regex/db pass already surfaced.
+ */
+export function setProSenseLspProvider(fn) {
+    lspProvider = typeof fn === 'function' ? fn : null;
+}
 
 function escHtml(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -85,6 +103,9 @@ export function hideProSense() {
     isOpen = false;
     filteredList = [];
     activeIndex = 0;
+    // Cancel any pending language-server completion so a late reply can't re-open the
+    // popup after the user dismissed it (Escape, blur, caret move, click away).
+    lspRequestSeq++;
     if (delayTimeout) clearTimeout(delayTimeout);
 }
 
@@ -321,26 +342,11 @@ function getHtmlContext(text, cursorIndex) {
     return 'html';
 }
 
-function evaluateProSense(fileName, manual = false) {
-    if (!editorEl) return;
-
-    let ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
-    
-    if (ext === 'html' || ext === 'htm') {
-        const cursor = editorEl.selectionStart;
-        const subContext = getHtmlContext(editorEl.value, cursor);
-        if (subContext !== 'html') {
-            ext = subContext; 
-        }
-    }
-
-    const config = api.languages.get(ext);
-    
-    if (!config) {
-        hideProSense();
-        return;
-    }
-
+/**
+ * Gathers the synchronous completion sources (predefined db, identifiers harvested from
+ * the current buffer and the other open tabs, and the user's custom snippets).
+ */
+function buildSyncCompletions(config, ext) {
     const localCompletions = extractFileIdentifiers(editorEl.value, config.parser, 'local');
     const externCompletions = [];
     const localLabels = new Set(localCompletions.map(c => c.label));
@@ -355,27 +361,15 @@ function evaluateProSense(fileName, manual = false) {
         .map(s => ({ label: s.trigger, insertText: s.body, type: 'snippet', source: 'custom' }));
 
     const dbCompletions = config.db.map(c => ({ ...c, source: c.source || 'db' }));
-    const completions = [...dbCompletions, ...localCompletions, ...externCompletions, ...customSnippets];
+    return [...dbCompletions, ...localCompletions, ...externCompletions, ...customSnippets];
+}
 
-    const word = getWordBeforeCursor();
-    const cursor = editorEl.selectionStart;
-    const charBefore = editorEl.value[cursor - word.length - 1];
-    const isMemberAccess = charBefore === '.';
-    
-    // Allow empty words if we are right after a dot (member access context),
-    // or if the popup was explicitly requested via a manual trigger (Ctrl+Space).
-    if ((!word && !isMemberAccess && !manual) || completions.length === 0) {
-        hideProSense();
-        return;
-    }
-
-    const wordLower = word.toLowerCase();
-    // Only verify exact matching constraints if a word is typed (skipped for manual triggers)
-    if (!manual && word && completions.some(item => item.label.toLowerCase() === wordLower)) {
-        hideProSense();
-        return;
-    }
-
+/**
+ * Scores, ranks and renders a completion pool for the given typed `word`. Hides the
+ * popup when nothing survives the fuzzy filter. Shared by the instant local pass and the
+ * later language-server merge so both apply identical ranking rules.
+ */
+function renderCompletionPool(completions, word, isMemberAccess) {
     const usage = getUsageMap();
 
     filteredList = completions
@@ -383,10 +377,10 @@ function evaluateProSense(fileName, manual = false) {
             const base = scoreMatch(item.label, word);
             if (base === null) return null;
             let score = base + (SOURCE_BOOST[item.source] || 0);
-            score += (usage[item.label] || 0) * 8; 
+            score += (usage[item.label] || 0) * 8;
             if (isMemberAccess) {
                 if (item.type === 'keyword') score -= 800;
-                else if (['function', 'property', 'variable'].includes(item.type)) score += 40;
+                else if (['function', 'method', 'property', 'variable'].includes(item.type)) score += 40;
             }
             return { item, score };
         })
@@ -403,6 +397,74 @@ function evaluateProSense(fileName, manual = false) {
     if (activeIndex >= filteredList.length) activeIndex = 0;
 
     renderWidget();
+}
+
+function evaluateProSense(fileName, manual = false) {
+    if (!editorEl) return;
+
+    let ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
+
+    if (ext === 'html' || ext === 'htm') {
+        const cursor = editorEl.selectionStart;
+        const subContext = getHtmlContext(editorEl.value, cursor);
+        if (subContext !== 'html') {
+            ext = subContext;
+        }
+    }
+
+    const config = api.languages.get(ext);
+
+    if (!config) {
+        hideProSense();
+        return;
+    }
+
+    const word = getWordBeforeCursor();
+    const cursor = editorEl.selectionStart;
+    const charBefore = editorEl.value[cursor - word.length - 1];
+    const isMemberAccess = charBefore === '.';
+
+    // Allow empty words if we are right after a dot (member access context),
+    // or if the popup was explicitly requested via a manual trigger (Ctrl+Space).
+    if (!word && !isMemberAccess && !manual) {
+        hideProSense();
+        return;
+    }
+
+    const syncCompletions = buildSyncCompletions(config, ext);
+
+    const wordLower = word.toLowerCase();
+    // Only verify exact matching constraints if a word is typed (skipped for manual triggers)
+    if (!manual && word && syncCompletions.some(item => item.label.toLowerCase() === wordLower)) {
+        hideProSense();
+        return;
+    }
+
+    // 1. Instant render from the local regex/db/snippet sources so typing feels immediate.
+    renderCompletionPool(syncCompletions, word, isMemberAccess);
+
+    // 2. Augment asynchronously with real language-server completions when a provider is
+    //    wired up and the server supports them. Guarded so a late reply is dropped once
+    //    the caret moves, the user keeps typing, or the popup is dismissed.
+    if (lspProvider) {
+        const seq = ++lspRequestSeq;
+        Promise.resolve(lspProvider(fileName)).then(lspItems => {
+            if (seq !== lspRequestSeq) return;
+            if (!lspItems || lspItems.length === 0) return;
+            if (editorEl.selectionStart !== cursor) return;
+            if (getWordBeforeCursor() !== word) return;
+
+            const seen = new Set(syncCompletions.map(c => c.label));
+            const merged = syncCompletions.slice();
+            for (const it of lspItems) {
+                if (it && it.label && !seen.has(it.label)) {
+                    merged.push(it);
+                    seen.add(it.label);
+                }
+            }
+            renderCompletionPool(merged, word, isMemberAccess);
+        }).catch(() => { /* server hiccup — keep the local suggestions */ });
+    }
 }
 
 export function handleProSenseInput(fileName, extraBuffers = []) {

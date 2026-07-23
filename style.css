@@ -1319,6 +1319,91 @@ kbd { background: rgba(125,125,125,0.2); padding: 2px 4px; border-radius: 3px; f
     display: none !important;
 }
 
+/* ============================================================= */
+/*  Right tool-window dock (IntelliJ-style contributed panels)   */
+/* ============================================================= */
+#right-activity-bar {
+    width: 50px;
+    background-color: var(--bg-darker);
+    border-left: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 10px 0;
+    gap: 2px;
+    flex-shrink: 0;
+}
+#right-activity-bar.hidden {
+    display: none !important;
+}
+
+/* Right-side activity icons mirror the left bar but flag the active panel on their
+   inner (left) edge, since they sit against the right window border. */
+.right-activity-icon.active {
+    color: var(--accent-color);
+    border-left: none;
+    border-right: 2px solid var(--accent-color);
+}
+
+#right-panel {
+    width: 300px;
+    background-color: var(--bg-sidebar);
+    border-left: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    transition: width 0.05s ease-out;
+}
+#right-panel.right-collapsed {
+    width: 0px !important;
+    overflow: hidden;
+    border-left: none;
+}
+
+.right-panel-header {
+    padding: 0 8px 0 16px;
+    height: 35px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border-color);
+}
+
+#close-right-panel-btn {
+    background: none;
+    border: none;
+    font-size: 16px;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+#close-right-panel-btn:hover {
+    color: var(--text-main);
+}
+
+#right-panel-body {
+    flex: 1;
+    overflow-y: auto;
+    color: var(--text-main);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.right-panel-content {
+    padding: 12px 14px;
+}
+
+/* The resizer sits before #right-panel; hide it when the panel is collapsed. */
+.resizer-v:has(+ #right-panel.right-collapsed) {
+    display: none !important;
+}
+
 /* High-Performance Drag Shielding Overlay */
 body.layout-resizing {
     user-select: none !important;
@@ -1349,6 +1434,25 @@ body.layout-resizing .resizer-h.dragging {
 .syntax-number { color: var(--syntax-number); }
 .syntax-punctuation { color: var(--syntax-punctuation); }
 .syntax-bracket { color: var(--syntax-bracket, #ffd700); font-weight: 500; }
+
+/* ---- LSP Semantic Token Overlay ----
+ * Emitted per-character by the renderer when a language server returns semantic tokens.
+ * These sit inside the regex highlighter's spans, so setting a colour here authoritatively
+ * overrides the guessed colour; token types the server can't speak to are left untouched.
+ * All colours map onto existing theme variables so every theme stays consistent. */
+.sem-namespace,
+.sem-type,
+.sem-class      { color: var(--syntax-class-name, var(--syntax-builtin)); }
+.sem-function   { color: var(--syntax-function); }
+.sem-variable,
+.sem-parameter,
+.sem-property   { color: var(--syntax-attr-name, var(--syntax-function)); }
+.sem-keyword    { color: var(--syntax-keyword); font-weight: 500; }
+.sem-string     { color: var(--syntax-string); }
+.sem-number     { color: var(--syntax-number); }
+.sem-comment    { color: var(--syntax-comment); font-style: italic; }
+.sem-decorator  { color: var(--syntax-function); }
+.sem-operator   { color: var(--syntax-punctuation); }
 /* ---- Markdown Syntax Highlight Styling Classes ---- */
 .syntax-md-header { 
     color: var(--syntax-md-header); 
@@ -1758,4 +1862,149 @@ body.layout-resizing .resizer-h.dragging {
     background-color: color-mix(in srgb, var(--accent-color) 30%, transparent) !important;
     color: transparent !important;
     -webkit-text-fill-color: transparent !important;
+}
+
+/* =====================================================================
+   Context Menus
+   Shared surface for the explorer (and any plugin-contributed) right-click
+   menus. Rendered directly under <body> so it can escape overflow clipping.
+   ===================================================================== */
+.context-menu {
+    position: fixed;
+    z-index: 5000;
+    min-width: 208px;
+    max-width: 340px;
+    padding: 4px;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    color: var(--text-main);
+    user-select: none;
+    animation: context-menu-in 90ms ease-out;
+}
+
+@keyframes context-menu-in {
+    from { opacity: 0; transform: translateY(-3px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.context-menu-item:hover:not(.disabled),
+.context-menu-item.submenu-open {
+    background: var(--accent-color);
+    color: #ffffff;
+}
+
+.context-menu-item.disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.context-menu-item.danger {
+    color: #ef5350;
+}
+
+.context-menu-item.danger:hover:not(.disabled) {
+    background: #ef5350;
+    color: #ffffff;
+}
+
+.context-menu-icon {
+    width: 14px;
+    flex-shrink: 0;
+    text-align: center;
+    font-size: 11px;
+    opacity: 0.85;
+}
+
+.context-menu-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.context-menu-shortcut {
+    font-size: 10px;
+    opacity: 0.6;
+    padding-left: 14px;
+}
+
+.context-menu-chevron {
+    font-size: 9px;
+    opacity: 0.7;
+    padding-left: 10px;
+}
+
+.context-menu-separator {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--border-color);
+}
+
+/* =====================================================================
+   Toast Notifications
+   ===================================================================== */
+#toast-stack {
+    position: fixed;
+    right: 16px;
+    bottom: 40px;
+    z-index: 5100;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.editor-toast {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    max-width: 380px;
+    padding: 9px 14px;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--accent-color);
+    border-radius: 5px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    color: var(--text-main);
+    opacity: 0;
+    transform: translateX(18px);
+    transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.editor-toast.visible {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.editor-toast i { font-size: 13px; color: var(--accent-color); }
+.toast-success { border-left-color: #4caf50; }
+.toast-success i { color: #4caf50; }
+.toast-warning { border-left-color: #ff9800; }
+.toast-warning i { color: #ff9800; }
+.toast-error { border-left-color: #ef5350; }
+.toast-error i { color: #ef5350; }
+
+/* Divider between groups of IDE-contributed toolbar controls */
+.ide-toolbar-separator {
+    display: inline-block;
+    width: 1px;
+    height: 16px;
+    margin: 0 4px;
+    vertical-align: middle;
+    background: var(--border-color);
 }

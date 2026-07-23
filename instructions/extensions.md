@@ -293,7 +293,26 @@ api.views.registerStatusBarItem('neon-reactor-state', {
 });
 ```
 
-### 5.11 Core Event Bus (`api.events`)
+### 5.11 Right Dock Tool Windows (`api.views.registerRightPanel`)
+Registers a tool window in the right-hand dock (IntelliJ-style). Each registered panel gets its own toggle button on a dedicated right activity bar; the dock stays hidden until at least one panel is live, and the user can resize it with a splitter. Content is rendered lazily the first time the panel is opened and then kept alive, so state survives toggling it shut and open again — making it the right home for rich, stateful side tools (outlines, dashboards, agents) rather than transient output.
+
+```javascript
+api.views.registerRightPanel('neon-inspector', {
+    title: 'Inspector',          // Rendered uppercase in the panel header
+    iconClass: 'fa-solid fa-wand-magic-sparkles',
+    render: (container) => {
+        container.innerHTML = `<div>Nothing selected.</div>`;
+    }
+});
+
+// Programmatically reveal/hide a panel by id:
+window.toggleRightPanel('neon-inspector');
+
+api.views.unregisterRightPanel('neon-inspector');
+```
+*The toggle button receives the id `right-act-[id]` and the content container `right-content-[id]`.*
+
+### 5.12 Core Event Bus (`api.events`)
 Subscribe to editor lifecycle events. `on` returns an unsubscribe function. Plugins may also `emit` their own namespaced events to coordinate between modules.
 
 | Event | Payload |
@@ -303,6 +322,10 @@ Subscribe to editor lifecycle events. `on` returns an unsubscribe function. Plug
 | `content-changed` | `{ path, name, contents }` — debounced (~300ms) while typing |
 | `diagnostics-updated` | `{ path, diagnostics: [{ start, end, line, col, severity, message }] }` |
 | `workspace-opened` | `{ path }` |
+| `file-created` | `{ path, name, kind }` — a file or folder was created in the explorer |
+| `file-renamed` | `{ oldPath, path, name, kind }` |
+| `file-deleted` | `{ path, name, kind }` |
+| `ide-changed` | `{ ideId, name }` — `ideId` is `null` for the normal editor |
 
 ```javascript
 const unsubscribe = api.events.on('file-saved', ({ name }) => {
@@ -310,19 +333,27 @@ const unsubscribe = api.events.on('file-saved', ({ name }) => {
 });
 ```
 
-### 5.12 Editor Facade (`api.editor`)
+### 5.13 Editor Facade (`api.editor`)
 Inspect and drive the live editor surface:
 
 ```javascript
 api.editor.getText();                    // Full (unfolded) text of the active document
+api.editor.setText(text);                // Replace the document (marks the tab dirty)
 api.editor.getActiveFile();              // { path, name } or null
+api.editor.getOpenFiles();               // [{ path, name }] for every open tab
+api.editor.getLanguageId();              // 'py', 'js', … (extension of the active file)
+api.editor.getSelection();               // { start, end, text }
+api.editor.replaceSelection('…');        // Overwrite the selection (inserts at caret if empty)
+api.editor.insertAtCursor('…');
+api.editor.getCursorPosition();          // { line, column }, both 1-based
 api.editor.goToLine(42, 4);              // Jump caret to 1-based line (optional 0-based column)
 await api.editor.openFileByPath(path);   // Re-focus an already-open tab by absolute path
 await api.editor.reloadActiveFile();     // Re-read active file from disk (e.g. after external formatting)
+await api.editor.save();                 // Save the active file
 api.editor.openBottomPanelTab(id);       // Reveal the bottom dock on a registered tab
 ```
 
-### 5.13 Custom Diagnostic Underlines (`api.views.registerDiagnosticStyle`)
+### 5.14 Custom Diagnostic Underlines (`api.views.registerDiagnosticStyle`)
 Registers custom syntax CSS classes for LSP warnings or error text decorators.
 
 ```javascript
@@ -333,6 +364,69 @@ api.views.registerDiagnosticStyle('neon-sparkle', {
 });
 ```
 *Corresponding styles must be declared inside a loaded dynamic theme or inline stylesheet injection.*
+
+### 5.15 Explorer Context Menu Entries (`api.menus.registerExplorerItem`)
+
+Adds entries to the right-click menu on files, folders, and the empty space below the file
+tree. Your entries are merged with the editor's built-in actions (New File, Rename, Delete,
+Copy Path, and so on).
+
+```javascript
+api.menus.registerExplorerItem('minify-css', {
+    label: 'Minify Stylesheet',
+    icon: 'fa-solid fa-compress',
+    group: 'plugins',
+    order: 10,
+    when: (target) => target.kind === 'file' && target.name.endsWith('.css'),
+    onClick: (target) => {
+        console.log('Minifying', target.path);
+    }
+});
+```
+
+**Config fields**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `label` | string \| `(target) => string` | Menu text; a function can interpolate the target name |
+| `icon` | string | Font Awesome class |
+| `group` | string | Placement slot (below). Defaults to `'plugins'` |
+| `order` | number | Sort position inside the group. Defaults to `100` |
+| `when` | `(target) => boolean` | Show only when true |
+| `enabled` | `(target) => boolean` | Grey the entry out when false |
+| `submenu` | array \| `(target) => array` | Nested entries; use `{ separator: true }` for dividers |
+| `danger` | boolean | Renders in red |
+| `onClick` | `(target) => void \| Promise` | The action |
+
+**The `target` object**
+
+| Field | Description |
+| --- | --- |
+| `kind` | `'file'`, `'directory'`, or `'root'` when empty space was clicked |
+| `name` / `path` | Name and absolute path of the clicked entry |
+| `handle` / `parent` | Underlying file handle and its parent directory handle |
+| `isRoot`, `isEmptyArea` | True when empty space was clicked |
+| `rootPath` | Absolute path of the open workspace |
+| `api` | The editor API |
+| `refresh()` | Repaints the explorer |
+
+**Groups**, in display order: `new`, `open`, `clipboard`, `edit`, `copy`, `reveal`,
+`plugins`, then any custom group name you invent, then `danger`. Separators are inserted
+between groups automatically, and `danger` stays last so Delete keeps its position.
+
+`api.menus.registerEditorItem(id, config)` takes the same shape for the code editor's own
+right-click menu. Both have matching `unregisterExplorerItem` / `unregisterEditorItem`
+methods.
+
+### 5.16 IDE Scoping and Bundled Extensions
+
+Extensions installed in `custom/extensions/` are **always active**, regardless of which IDE
+the user has selected.
+
+Extensions **bundled inside an IDE** (`custom/ides/<ide>/extensions/<your-ext>/`) behave
+differently: they are owned by their host IDE, so every contribution they register is live
+only while that IDE is the selected workspace. Write them exactly the same way — the host
+handles the scoping. See `IDEs.md` §2.
 
 ---
 

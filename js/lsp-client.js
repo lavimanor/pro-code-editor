@@ -21,6 +21,10 @@ export class LspClient {
         this.isStarting = false;
         this.diagnosticsRegistered = false;
 
+        // Populated from the server's `initialize` reply (see initialize()).
+        this.capabilities = null;
+        this.semanticTokensLegend = null;
+
         if (this.isElectron) {
             const { ipcRenderer } = window.require('electron');
             ipcRenderer.on('lsp-message', (event, { lspId: id, message }) => {
@@ -121,6 +125,28 @@ export class LspClient {
                     },
                     completion: { completionItem: { snippetSupport: true } },
                     hover: {},
+                    // Ask servers to compute whole-document semantic tokens. The server
+                    // answers with its own legend (captured below) and returns indices
+                    // into it, so the exhaustive lists here are just the vocabulary we
+                    // promise to understand — servers fall back gracefully when a type
+                    // is unknown to us.
+                    semanticTokens: {
+                        dynamicRegistration: false,
+                        requests: { range: false, full: true },
+                        tokenTypes: [
+                            'namespace', 'type', 'class', 'enum', 'interface', 'struct',
+                            'typeParameter', 'parameter', 'variable', 'property', 'enumMember',
+                            'event', 'function', 'method', 'macro', 'keyword', 'modifier',
+                            'comment', 'string', 'number', 'regexp', 'operator', 'decorator'
+                        ],
+                        tokenModifiers: [
+                            'declaration', 'definition', 'readonly', 'static', 'deprecated',
+                            'abstract', 'async', 'modification', 'documentation', 'defaultLibrary'
+                        ],
+                        formats: ['relative'],
+                        overlappingTokenSupport: false,
+                        multilineTokenSupport: false
+                    },
                     // Explicitly advertise standard diagnostic properties to activate server push streams
                     publishDiagnostics: {
                         relatedInformation: true,
@@ -132,7 +158,16 @@ export class LspClient {
             initializationOptions: initializationOptions
         }).then(async (res) => {
             this.sendNotification('initialized', {});
-            
+
+            // Remember what the server can actually do, so the editor only asks for
+            // features it advertises (e.g. pyright ships completions and semantic
+            // tokens; the CSS/HTML servers offer completions but no semantic tokens).
+            if (res && res.result && res.result.capabilities) {
+                this.capabilities = res.result.capabilities;
+                const stp = this.capabilities.semanticTokensProvider;
+                this.semanticTokensLegend = (stp && stp.legend) || null;
+            }
+
             // Broadcast settings dynamically via workspace/didChangeConfiguration to satisfy
             // servers (like typescript-language-server) that expect config updates
             if (initializationOptions) {
@@ -179,6 +214,29 @@ export class LspClient {
             textDocument: { uri },
             position: { line, character }
         });
+    }
+
+    /** Whole-document semantic tokens. Resolves to a message whose result is { data:[…] }. */
+    async semanticTokens(filePath) {
+        const uri = pathToUri(filePath);
+        return this.sendRequest('textDocument/semanticTokens/full', {
+            textDocument: { uri }
+        });
+    }
+
+    /** True once the server has advertised a completion provider. */
+    hasCompletion() {
+        return !!(this.capabilities && this.capabilities.completionProvider);
+    }
+
+    /** True once the server has advertised a semantic-tokens provider with a legend. */
+    hasSemanticTokens() {
+        return !!(this.capabilities && this.capabilities.semanticTokensProvider) && !!this.semanticTokensLegend;
+    }
+
+    /** The server's { tokenTypes, tokenModifiers } legend, or null before initialize. */
+    getSemanticTokensLegend() {
+        return this.semanticTokensLegend;
     }
 
     async stop() {

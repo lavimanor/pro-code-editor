@@ -1,9 +1,19 @@
 import { api } from './api-core.js';
 
-export function renderFileTree(container, items, selectedPath, expandedFolders, activeIconPackKey, onSelect, onFolderToggle, onDelete, onMove) {
+export function renderFileTree(container, items, selectedPath, expandedFolders, activeIconPackKey, onSelect, onFolderToggle, onDelete, onMove, onContextMenu) {
     container.innerHTML = '';
     const iconPack = api.icons.get(activeIconPackKey) || api.icons.get('material');
-    
+
+    // Right-clicking the empty space below the tree targets the workspace root.
+    if (typeof onContextMenu === 'function' && !container._rootContextMenuBound) {
+        container._rootContextMenuBound = true;
+        container.addEventListener('contextmenu', (e) => {
+            if (e.target.closest('.tree-item')) return; // Handled by the item itself
+            e.preventDefault();
+            onContextMenu(e, null);
+        });
+    }
+
     function buildTreeHTML(itemsElement, parentElement, levelPath = 'root') {
         const ul = document.createElement('ul');
 
@@ -61,6 +71,14 @@ export function renderFileTree(container, items, selectedPath, expandedFolders, 
                 }
             });
 
+            if (typeof onContextMenu === 'function') {
+                wrapper.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onContextMenu(e, { ...item, treePath: currentItemPath });
+                });
+            }
+
             // Drag and Drop Binds
             wrapper.addEventListener('dragstart', (e) => {
                 e.stopPropagation();
@@ -116,7 +134,7 @@ export function renderFileTree(container, items, selectedPath, expandedFolders, 
 /**
  * Renders file tabs with integrated workspace file-icons and drag-and-drop tab ordering.
  */
-export function renderTabs(container, openTabs, activeFileHandle, dirtyFiles, activeIconPackKey, onTabSelect, onTabClose, onTabReorder) {
+export function renderTabs(container, openTabs, activeFileHandle, dirtyFiles, activeIconPackKey, onTabSelect, onTabClose, onTabReorder, onTabContextMenu) {
     container.innerHTML = '';
     const iconPack = api.icons.get(activeIconPackKey) || api.icons.get('material');
 
@@ -162,6 +180,15 @@ export function renderTabs(container, openTabs, activeFileHandle, dirtyFiles, ac
             onTabClose(fileHandle);
         });
         tab.appendChild(closeBtn);
+
+        // Right-clicking a tab opens the bulk-close / tab actions menu.
+        if (typeof onTabContextMenu === 'function') {
+            tab.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onTabContextMenu(e, fileHandle);
+            });
+        }
 
         // Drag and Drop Tab Reordering
         tab.draggable = true;

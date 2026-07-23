@@ -172,6 +172,17 @@
                     </div>
                 </div>
             </main>
+
+            <!-- Right tool-window dock: hosts extension/IDE-contributed panels
+                 (IntelliJ-style). Collapsed and hidden until a plugin registers one. -->
+            <aside id="right-panel" class="right-collapsed">
+                <div class="right-panel-header">
+                    <span id="right-panel-title">TOOLS</span>
+                    <button id="close-right-panel-btn" title="Hide panel">×</button>
+                </div>
+                <div id="right-panel-body"></div>
+            </aside>
+            <nav id="right-activity-bar" class="hidden"></nav>
         </div>
 
         <footer id="status-bar">

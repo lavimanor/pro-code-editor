@@ -167,6 +167,133 @@ export async function removeEntryHandle(parentHandle, entryName) {
     await parentHandle.removeEntry(entryName, { recursive: true });
 }
 
+/** True when an entry with `name` already lives inside `parentHandle`. */
+export async function entryExists(parentHandle, name) {
+    if (isElectron && parentHandle.isElectronMock) {
+        return fs.existsSync(path.join(parentHandle.path, name));
+    }
+    try {
+        await parentHandle.getFileHandle(name);
+        return true;
+    } catch (err) {
+        try {
+            await parentHandle.getDirectoryHandle(name);
+            return true;
+        } catch (err2) {
+            return false;
+        }
+    }
+}
+
+/**
+ * Renames a file or directory in place and returns a handle to the renamed entry.
+ * The Web File System API has no rename primitive, so the fallback copies and removes.
+ */
+export async function renameEntryHandle(parentHandle, item, newName) {
+    if (isElectron && parentHandle.isElectronMock) {
+        const oldPath = item.handle.path;
+        const newPath = path.join(parentHandle.path, newName);
+        fs.renameSync(oldPath, newPath);
+        return buildElectronHandle(newPath, item.kind);
+    }
+
+    if (item.kind === 'file') {
+        const contents = await readFileContents(item.handle);
+        const newHandle = await createFileHandle(parentHandle, newName);
+        await saveFileContents(newHandle, contents);
+        await parentHandle.removeEntry(item.name);
+        return newHandle;
+    }
+
+    const newDir = await createDirectoryHandle(parentHandle, newName);
+    await copyDirectoryWeb(item.handle, newDir);
+    await parentHandle.removeEntry(item.name, { recursive: true });
+    return newDir;
+}
+
+/**
+ * Copies a file or directory (recursively) into `targetDirHandle` under `newName`.
+ * Returns a handle to the copy.
+ */
+export async function copyEntryHandle(item, targetDirHandle, newName) {
+    const name = newName || item.name;
+
+    if (isElectron && targetDirHandle.isElectronMock) {
+        const destPath = path.join(targetDirHandle.path, name);
+        copyRecursive(item.handle.path, destPath);
+        return buildElectronHandle(destPath, item.kind);
+    }
+
+    if (item.kind === 'file') {
+        const contents = await readFileContents(item.handle);
+        const newHandle = await createFileHandle(targetDirHandle, name);
+        await saveFileContents(newHandle, contents);
+        return newHandle;
+    }
+
+    const newDir = await createDirectoryHandle(targetDirHandle, name);
+    await copyDirectoryWeb(item.handle, newDir);
+    return newDir;
+}
+
+/**
+ * Picks a free name inside `parentHandle` by appending " copy", " copy 2", ...
+ * while preserving the file extension.
+ */
+export async function resolveAvailableName(parentHandle, baseName, kind) {
+    const dotIdx = kind === 'file' ? baseName.lastIndexOf('.') : -1;
+    const stem = dotIdx > 0 ? baseName.slice(0, dotIdx) : baseName;
+    const ext = dotIdx > 0 ? baseName.slice(dotIdx) : '';
+
+    let candidate = `${stem} copy${ext}`;
+    let counter = 2;
+    while (await entryExists(parentHandle, candidate)) {
+        candidate = `${stem} copy ${counter}${ext}`;
+        counter++;
+    }
+    return candidate;
+}
+
+function buildElectronHandle(fullPath, kind) {
+    return {
+        kind,
+        name: path.basename(fullPath),
+        path: fullPath,
+        isElectronMock: true,
+        getFile: async () => ({
+            text: async () => fs.readFileSync(fullPath, 'utf8')
+        })
+    };
+}
+
+function copyRecursive(src, dest) {
+    const stat = fs.statSync(src);
+    if (stat.isDirectory()) {
+        if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+        for (const child of fs.readdirSync(src)) {
+            copyRecursive(path.join(src, child), path.join(dest, child));
+        }
+    } else {
+        fs.copyFileSync(src, dest);
+    }
+}
+
+async function copyDirectoryWeb(sourceDirHandle, targetDirHandle) {
+    for await (const entry of sourceDirHandle.values()) {
+        if (entry.kind === 'file') {
+            const file = await entry.getFile();
+            const contents = await file.text();
+            const newFile = await targetDirHandle.getFileHandle(entry.name, { create: true });
+            const writable = await newFile.createWritable();
+            await writable.write(contents);
+            await writable.close();
+        } else {
+            const subDir = await targetDirHandle.getDirectoryHandle(entry.name, { create: true });
+            await copyDirectoryWeb(entry, subDir);
+        }
+    }
+}
+
 /**
  * Calculates the path segments of a child handle relative to a parent handle.
  */

@@ -37,8 +37,12 @@ All workspace attributes are registered via standard API endpoints:
 *   `api.languages.registerHighlighter(langId, rules)`: Contributes regular expression syntax coloring models.
 *   `api.terminal.registerRunner(ext, config)`: Contributes custom compiler and script execution pathways.
 *   `api.views.registerSidebarPanel(id, config)`: Contributes custom Activity Bar buttons and sidebar panels.
+*   `api.views.registerRightPanel(id, config)`: Contributes IntelliJ-style tool windows to the resizable right-hand dock (outlines, dashboards, agents).
 *   `api.views.registerSetting(id, config)`: Contributes dynamic user preference options with persistent browser caching.
+*   `api.menus.registerExplorerItem(id, config)`: Contributes entries to the file explorer's right-click menu.
 *   `api.workspace.registerIDE(id, config)`: Contributes custom IDE workspaces, top-bar toolbars, and empty welcome dashboards.
+
+**IDE scoping:** everything an IDE plugin registers — panels, themes, languages, runners, menu entries, event listeners — is live only while that IDE is the selected workspace. Switching environments (or returning to the normal editor) switches it all off, and bundled extensions follow their host IDE. Standalone extensions in `custom/extensions/` are always active.
 
 See more about plugins:
 

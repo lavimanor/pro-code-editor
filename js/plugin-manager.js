@@ -1,5 +1,5 @@
 import { printToTerminal } from './terminal.js';
-import { api } from './api-core.js';
+import { api, ownership } from './api-core.js';
 import { registerProblemsPanel } from './problems.js';
 
 const CORE_API_VERSION = '1.0.0';
@@ -122,6 +122,7 @@ export class PluginManager {
         api.languages.clear();
         api.views.clear(); // This clears the registry including 'plugins-manager'
         api.events.clear(); // Drop stale plugin event subscriptions before re-activation
+        api.menus.clear(); // Drop stale context-menu contributions
         await api.terminal.resetRunners();
 
         // 3. Immediately re-register the built-in Plugins Manager panel
@@ -170,18 +171,15 @@ export class PluginManager {
         if (typeof window.renderDynamicStatusItems === 'function') window.renderDynamicStatusItems();
         if (typeof window.renderIdeSelector === 'function') window.renderIdeSelector();
 
-        // Restore active IDE if it exists
+        // Restore active IDE if it exists. Switching also re-syncs every contributed
+        // surface against the new selection, so it must settle before the view restore.
         const savedActiveIdeId = api.workspace.ides.has(cachedActiveIdeId) ? cachedActiveIdeId : null;
-        if (savedActiveIdeId) {
-            window.switchWorkspaceIDE(savedActiveIdeId);
-        } else {
-            window.switchWorkspaceIDE('default');
-        }
+        await window.switchWorkspaceIDE(savedActiveIdeId || 'default');
 
         // 7. Safely restore open sidebar layout view state with no visual disruption
         const savedViewId = window.currentActiveView;
         if (savedViewId && savedViewId !== 'explorer') {
-            const activePanel = api.views.sidebarPanels.get(savedViewId);
+            const activePanel = api.views.activeSidebarPanels().get(savedViewId);
             if (activePanel) {
                 const fileTree = document.getElementById('file-tree');
                 const pluginContent = document.getElementById('sidebar-plugin-content');
@@ -222,6 +220,8 @@ export class PluginManager {
     async _activatePlugins(scanned, reload) {
         this.plugins = [];
         this.allPlugins = [];
+        // Drop stale ownership bindings — this pass rebuilds them from the fresh scan.
+        ownership.reset();
         const disabledIds = this.getDisabledPluginIds();
         const ctx = this._buildDependencyContext(scanned, disabledIds);
 
@@ -309,7 +309,20 @@ export class PluginManager {
                 try {
                     const module = await import(entryUrl);
                     if (typeof module.activate === 'function') {
-                        module.activate(api);
+                        // Stamp every registration this plugin makes with its identity so the
+                        // host can scope IDE contributions to the selected workspace. Bundled
+                        // extensions inherit their host IDE's scope via hostPluginId.
+                        ownership.beginActivation({
+                            pluginId: id,
+                            type,
+                            hostPluginId: plugin._bundledBy || null,
+                            name
+                        });
+                        try {
+                            module.activate(api);
+                        } finally {
+                            ownership.endActivation();
+                        }
                         if (type === 'ide') {
                             api.workspace.ides.forEach((cfg, ideId) => {
                                 if (cfg && !ideIdsBefore.has(ideId) && !cfg._iconPath) {
