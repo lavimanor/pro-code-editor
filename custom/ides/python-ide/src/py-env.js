@@ -5,6 +5,17 @@
 export const isElectron = typeof window !== 'undefined' && window.process && window.require;
 export const isWin = isElectron && window.process.platform === 'win32';
 
+let customPythonPath = null;
+
+export function setCustomPythonPath(path) {
+    customPythonPath = path;
+}
+
+export function getPythonPath() {
+    if (customPythonPath) return customPythonPath;
+    return resolvePython().cmd;
+}
+
 /**
  * Resolve the interpreter to use. Honours the "Pip Install Target Environment"
  * setting by preferring a project virtual-env interpreter when one exists.
@@ -12,6 +23,7 @@ export const isWin = isElectron && window.process.platform === 'win32';
  */
 export function resolvePython() {
     const fallback = isWin ? 'python' : 'python3';
+    if (customPythonPath) return { cmd: customPythonPath, env: 'Venv (.venv)' };
     if (!isElectron) return { cmd: fallback, env: 'Global System' };
 
     const envSetting = localStorage.getItem('setting-pref-python-pip-env') || 'Global System';

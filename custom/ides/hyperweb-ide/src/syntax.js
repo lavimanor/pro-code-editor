@@ -294,7 +294,8 @@ export const tokenStyles = `
 export const WEB_LANGUAGES = [
     { id: 'html', name: 'HTML', parser: 'html', extensions: ['html', 'htm'], rules: htmlRules },
     { id: 'css', name: 'CSS', parser: 'css', extensions: ['css', 'scss', 'less'], rules: cssRules },
-    { id: 'javascript', name: 'JavaScript', parser: 'js', extensions: ['js', 'mjs', 'cjs', 'jsx'], rules: jsRules }
+    { id: 'javascript', name: 'JavaScript', parser: 'js', extensions: ['js', 'mjs', 'cjs', 'jsx'], rules: jsRules },
+    { id: 'typescript', name: 'TypeScript', parser: 'js', extensions: ['ts', 'tsx'], rules: jsRules }
 ];
 
 /**

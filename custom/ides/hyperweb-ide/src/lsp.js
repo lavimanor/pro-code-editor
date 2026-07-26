@@ -68,8 +68,21 @@ export const WEB_SERVERS = [
         install: 'npm i -g typescript-language-server typescript',
         args: ['--stdio'],
         options: {
-            // main.js resolves tsserver.js out of the global npm root for any command
-            // starting with 'typescript-language-server' and merges it in here.
+            hostInfo: 'pro-code-editor',
+            preferences: {
+                includeCompletionsForModuleExports: true,
+                includeCompletionsWithSnippetText: true,
+                includeCompletionsWithInsertText: true
+            }
+        }
+    },
+    {
+        key: 'typescript',
+        label: 'TypeScript',
+        command: 'typescript-language-server',
+        install: 'npm i -g typescript-language-server typescript',
+        args: ['--stdio'],
+        options: {
             hostInfo: 'pro-code-editor',
             preferences: {
                 includeCompletionsForModuleExports: true,

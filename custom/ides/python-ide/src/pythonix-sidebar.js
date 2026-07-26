@@ -1,464 +1,286 @@
-import { isElectron, resolvePython, spawnPython } from './py-env.js';
+import { isElectron, resolvePython, spawnPython, setCustomPythonPath } from './py-env.js';
 import { initOutlineSection } from './outline.js';
+import { initTestExplorer } from './test-explorer.js';
+import { createVirtualEnv } from './venv-manager.js';
 
 export function registerPythonixSidebar(api) {
     api.views.registerSidebarPanel('pythonix-ide-panel', {
-        iconClass: 'fa-brands fa-python', // Unified Python brand icon
+        iconClass: 'fa-brands fa-python',
         title: 'Pythonix IDE',
         render: (container) => {
-            // Setup the unified sidebar template with active CSS theme custom properties
             container.innerHTML = `
-                <div style="height: 100%; display: flex; flex-direction: column; background: var(--bg-sidebar); font-family: sans-serif; box-sizing: border-box; color: var(--text-main);">
+                <div style="height: 100%; display: flex; flex-direction: column; background: var(--bg-sidebar); font-family: var(--font-ui, sans-serif); box-sizing: border-box; color: var(--text-main);">
 
                     <!-- Header -->
-                    <div style="padding: 12px; border-bottom: 1px solid var(--border-color); background: var(--bg-darker);">
+                    <div style="padding: 12px; border-bottom: 1px solid var(--border-color); background: var(--bg-darker); display: flex; align-items: center; justify-content: space-between;">
                         <h4 style="margin: 0; color: var(--accent-color); font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
-                            <i class="fa-brands fa-python"></i> Pythonix Workspace Tools
+                            <i class="fa-brands fa-python"></i> Pythonix Tools
                         </h4>
+                        <span id="py-env-badge" style="font-size: 10px; background: rgba(53, 114, 165, 0.15); color: var(--accent-color); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border-color);">
+                            System Python
+                        </span>
                     </div>
 
-                    <!-- Accordion Section 0: Code Outline -->
+                    <!-- Accordion 0: Code Outline -->
                     <div class="menu-section" style="border-bottom: 1px solid var(--border-color);">
-                        <!-- Accordion Header Toggle -->
-                        <div class="menu-header" id="header-outline" style="
-                            padding: 10px 12px;
-                            background: var(--bg-dark);
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                            cursor: pointer;
-                            font-size: 12px;
-                            font-weight: 600;
-                            user-select: none;
-                        ">
+                        <div class="menu-header" id="header-outline" style="padding: 10px 12px; background: var(--bg-dark); display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 12px; font-weight: 600; user-select: none;">
                             <span style="display: flex; align-items: center; gap: 8px;">
                                 <i class="fa-solid fa-sitemap" style="color: var(--accent-color); width: 14px;"></i> Code Outline
                             </span>
                             <i class="fa-solid fa-chevron-down arrow-icon" id="arrow-outline" style="font-size: 10px; color: var(--text-muted); transition: transform 0.2s;"></i>
                         </div>
-
-                        <!-- Accordion Content Container -->
-                        <div class="menu-content" id="content-outline" style="
-                            padding: 8px;
-                            display: block; /* Default expanded */
-                            max-height: 220px;
-                            overflow-y: auto;
-                            background: var(--bg-sidebar);
-                        "></div>
+                        <div class="menu-content" id="content-outline" style="padding: 8px; display: block; max-height: 180px; overflow-y: auto; background: var(--bg-sidebar);"></div>
                     </div>
 
-                    <!-- Accordion Section 1: Pip Package Manager -->
+                    <!-- Accordion 1: Virtual Environment (.venv) Manager -->
                     <div class="menu-section" style="border-bottom: 1px solid var(--border-color);">
-                        <!-- Accordion Header Toggle -->
-                        <div class="menu-header" id="header-pip" style="
-                            padding: 10px 12px;
-                            background: var(--bg-dark);
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                            cursor: pointer;
-                            font-size: 12px;
-                            font-weight: 600;
-                            user-select: none;
-                        ">
+                        <div class="menu-header" id="header-venv" style="padding: 10px 12px; background: var(--bg-dark); display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 12px; font-weight: 600; user-select: none;">
+                            <span style="display: flex; align-items: center; gap: 8px;">
+                                <i class="fa-solid fa-cube" style="color: var(--accent-color); width: 14px;"></i> Virtual Environment
+                            </span>
+                            <i class="fa-solid fa-chevron-down arrow-icon" id="arrow-venv" style="font-size: 10px; color: var(--text-muted); transition: transform 0.2s; transform: rotate(-90deg);"></i>
+                        </div>
+                        <div class="menu-content" id="content-venv" style="padding: 12px; display: none; flex-direction: column; gap: 8px; background: var(--bg-sidebar);">
+                            <div style="font-size: 11px; color: var(--text-muted);">
+                                Current Env: <strong id="venv-current-name" style="color: var(--accent-color);">System Python</strong>
+                            </div>
+                            <div style="display: flex; gap: 6px;">
+                                <button id="venv-create-btn" style="flex: 1; padding: 6px; background: var(--accent-color); border: none; border-radius: 4px; color: #fff; cursor: pointer; font-size: 11px; font-weight: 600;">
+                                    <i class="fa-solid fa-plus"></i> Create .venv
+                                </button>
+                            </div>
+                            <div id="venv-log-output" style="display: none; max-height: 100px; overflow-y: auto; background: var(--bg-darker); border: 1px solid var(--border-color); border-radius: 4px; padding: 6px; font-family: var(--font-code, monospace); font-size: 10px;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Accordion 2: Pip Package Manager -->
+                    <div class="menu-section" style="border-bottom: 1px solid var(--border-color);">
+                        <div class="menu-header" id="header-pip" style="padding: 10px 12px; background: var(--bg-dark); display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 12px; font-weight: 600; user-select: none;">
                             <span style="display: flex; align-items: center; gap: 8px;">
                                 <i class="fa-solid fa-cubes" style="color: var(--accent-color); width: 14px;"></i> Pip Package Manager
                             </span>
-                            <i class="fa-solid fa-chevron-down arrow-icon" id="arrow-pip" style="font-size: 10px; color: var(--text-muted); transition: transform 0.2s;"></i>
+                            <i class="fa-solid fa-chevron-down arrow-icon" id="arrow-pip" style="font-size: 10px; color: var(--text-muted); transition: transform 0.2s; transform: rotate(-90deg);"></i>
                         </div>
-
-                        <!-- Accordion Content Container -->
-                        <div class="menu-content" id="content-pip" style="
-                            padding: 12px;
-                            display: flex; /* Default expanded */
-                            flex-direction: column;
-                            gap: 10px;
-                            background: var(--bg-sidebar);
-                        ">
-                            <p style="margin: 0; font-size: 11px; color: var(--text-muted);">Install Python packages with <code>pip</code>. Target: <span id="pip-env-label" style="color: var(--accent-color); font-weight: 600;">Global System</span></p>
-
+                        <div class="menu-content" id="content-pip" style="padding: 12px; display: none; flex-direction: column; gap: 10px; background: var(--bg-sidebar);">
                             <div style="display: flex; gap: 6px;">
-                                <input id="pip-input" type="text" placeholder="e.g. requests" style="flex: 1; min-width: 0; padding: 6px 10px; background: var(--bg-darker); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main); font-size: 11px; outline: none;" />
-                                <button id="pip-install-btn" style="padding: 6px 12px; background: var(--accent-color); border: none; border-radius: 4px; color: #fff; cursor: pointer; font-size: 11px; font-weight: 500; white-space: nowrap;">
+                                <input id="pip-input" type="text" placeholder="Package (e.g. requests)" style="flex: 1; min-width: 0; padding: 6px 8px; background: var(--bg-darker); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main); font-size: 11px; outline: none;" />
+                                <button id="pip-install-btn" style="padding: 6px 12px; background: var(--accent-color); border: none; border-radius: 4px; color: #fff; cursor: pointer; font-size: 11px; font-weight: 500;">
                                     Install
                                 </button>
                             </div>
-
-                            <div style="font-weight: 600; font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Popular Libraries</div>
-                            <div id="pip-popular" style="display: flex; flex-direction: column; gap: 6px;"></div>
-
-                            <!-- Live pip output log -->
-                            <div id="pip-output" style="
-                                display: none;
-                                max-height: 140px;
-                                overflow-y: auto;
-                                background: var(--bg-dark);
-                                border: 1px solid var(--border-color);
-                                border-radius: 4px;
-                                padding: 6px 8px;
-                                font-family: 'Consolas', 'Courier New', monospace;
-                                font-size: 10px;
-                                color: var(--text-main);
-                                white-space: pre-wrap;
-                                word-break: break-word;
-                            "></div>
+                            <div style="display: flex; gap: 6px;">
+                                <button id="pip-req-install" style="flex: 1; padding: 4px 6px; background: var(--bg-darker); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main); cursor: pointer; font-size: 10px;">
+                                    <i class="fa-solid fa-file-import"></i> Install requirements.txt
+                                </button>
+                                <button id="pip-freeze-export" style="flex: 1; padding: 4px 6px; background: var(--bg-darker); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main); cursor: pointer; font-size: 10px;">
+                                    <i class="fa-solid fa-file-export"></i> Freeze to requirements.txt
+                                </button>
+                            </div>
+                            <div id="pip-output" style="display: none; max-height: 120px; overflow-y: auto; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 4px; padding: 6px; font-family: var(--font-code, monospace); font-size: 10px; white-space: pre-wrap; word-break: break-word;"></div>
                         </div>
                     </div>
 
-                    <!-- Accordion Section 2: Interactive Scratchpad -->
+                    <!-- Accordion 3: Unit Test Explorer -->
+                    <div class="menu-section" style="border-bottom: 1px solid var(--border-color);">
+                        <div class="menu-header" id="header-tests" style="padding: 10px 12px; background: var(--bg-dark); display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 12px; font-weight: 600; user-select: none;">
+                            <span style="display: flex; align-items: center; gap: 8px;">
+                                <i class="fa-solid fa-vial" style="color: var(--accent-color); width: 14px;"></i> Test Explorer
+                            </span>
+                            <i class="fa-solid fa-chevron-down arrow-icon" id="arrow-tests" style="font-size: 10px; color: var(--text-muted); transition: transform 0.2s; transform: rotate(-90deg);"></i>
+                        </div>
+                        <div class="menu-content" id="content-tests" style="padding: 12px; display: none; flex-direction: column; background: var(--bg-sidebar);"></div>
+                    </div>
+
+                    <!-- Accordion 4: Interactive Scratchpad -->
                     <div class="menu-section" style="border-bottom: 1px solid var(--border-color); flex: 1; display: flex; flex-direction: column;">
-                        <!-- Accordion Header Toggle -->
-                        <div class="menu-header" id="header-scratch" style="
-                            padding: 10px 12px;
-                            background: var(--bg-dark);
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                            cursor: pointer;
-                            font-size: 12px;
-                            font-weight: 600;
-                            user-select: none;
-                        ">
+                        <div class="menu-header" id="header-scratch" style="padding: 10px 12px; background: var(--bg-dark); display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 12px; font-weight: 600; user-select: none;">
                             <span style="display: flex; align-items: center; gap: 8px;">
                                 <i class="fa-solid fa-terminal" style="color: var(--accent-color); width: 14px;"></i> Interactive Scratchpad
                             </span>
                             <i class="fa-solid fa-chevron-down arrow-icon" id="arrow-scratch" style="font-size: 10px; color: var(--text-muted); transition: transform 0.2s; transform: rotate(-90deg);"></i>
                         </div>
-
-                        <!-- Accordion Content Container -->
-                        <div class="menu-content" id="content-scratch" style="
-                            padding: 12px;
-                            display: none; /* Default collapsed */
-                            flex-direction: column;
-                            gap: 10px;
-                            background: var(--bg-sidebar);
-                            flex: 1;
-                        ">
-                            <p style="margin: 0; font-size: 11px; color: var(--text-muted);">Draft and run isolated snippets of Python on-the-fly. <span style="color: var(--text-muted);">Tip: <strong>Ctrl+Enter</strong> runs.</span></p>
-
-                            <!-- Scratchpad Editor Area -->
-                            <textarea id="scratchpad-editor" spellcheck="false" style="
-                                flex: 1;
-                                min-height: 120px;
-                                background: var(--bg-darker);
-                                border: 1px solid var(--border-color);
-                                border-radius: 4px;
-                                color: var(--syntax-function);
-                                font-family: 'Consolas', 'Courier New', monospace;
-                                font-size: 11px;
-                                padding: 8px;
-                                resize: none;
-                                outline: none;
-                                white-space: pre;
-                                overflow: auto;
-                            " placeholder="# Type quick Python code here...&#10;print('Hello World!')"></textarea>
-
+                        <div class="menu-content" id="content-scratch" style="padding: 12px; display: none; flex-direction: column; gap: 8px; background: var(--bg-sidebar); flex: 1;">
+                            <div style="display: flex; gap: 6px; align-items: center;">
+                                <span style="font-size: 10px; color: var(--text-muted);">Preset:</span>
+                                <select id="scratch-preset" style="flex: 1; padding: 3px; background: var(--bg-darker); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main); font-size: 10px;">
+                                    <option value="custom">-- Custom Snippet --</option>
+                                    <option value="fastapi">FastAPI App Skeleton</option>
+                                    <option value="benchmark">Performance Benchmark</option>
+                                    <option value="scraper">Requests Web Scraper</option>
+                                    <option value="dataviz">Numpy / Matplotlib Starter</option>
+                                </select>
+                            </div>
+                            <textarea id="scratchpad-editor" spellcheck="false" style="flex: 1; min-height: 100px; background: var(--bg-darker); border: 1px solid var(--border-color); border-radius: 4px; color: var(--syntax-function); font-family: var(--font-code, monospace); font-size: 11px; padding: 8px; resize: none; outline: none; white-space: pre;" placeholder="# Type quick Python snippet here...\nprint('Hello World!')"></textarea>
                             <div style="display: flex; gap: 6px; justify-content: flex-end;">
                                 <button id="scratchpad-clear-btn" style="padding: 4px 10px; background: transparent; border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-muted); cursor: pointer; font-size: 10px;">Clear</button>
                                 <button id="scratchpad-run-btn" style="padding: 4px 12px; background: var(--accent-color); border: none; border-radius: 4px; color: #fff; cursor: pointer; font-size: 10px; font-weight: 600; display: flex; align-items: center; gap: 4px;">
                                     <i class="fa-solid fa-play"></i> Run Code
                                 </button>
                             </div>
-
-                            <div style="font-weight: 600; font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Console Output</div>
-                            <div id="scratchpad-output" style="
-                                height: 100px;
-                                background: var(--bg-dark);
-                                border: 1px solid var(--border-color);
-                                border-radius: 4px;
-                                padding: 6px;
-                                overflow-y: auto;
-                                font-family: 'Consolas', 'Courier New', monospace;
-                                font-size: 10px;
-                                color: var(--text-muted);
-                                white-space: pre-wrap;
-                                word-break: break-word;
-                            ">Console idle...</div>
+                            <div id="scratchpad-output" style="height: 90px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 4px; padding: 6px; overflow-y: auto; font-family: var(--font-code, monospace); font-size: 10px; color: var(--text-muted); white-space: pre-wrap; word-break: break-word;">Console idle...</div>
                         </div>
                     </div>
                 </div>
             `;
 
-            // ============================================================
-            //  Shared Python process helpers (see ./py-env.js)
-            // ============================================================
-            const ERROR_RED = '#e06c75';
-            const SUCCESS_GREEN = 'var(--syntax-string)';
-
-            // ============================================================
-            //  Accordion toggling
-            // ============================================================
-            const headerOutline = container.querySelector('#header-outline');
-            const contentOutline = container.querySelector('#content-outline');
-            const arrowOutline = container.querySelector('#arrow-outline');
-
-            const headerPip = container.querySelector('#header-pip');
-            const contentPip = container.querySelector('#content-pip');
-            const arrowPip = container.querySelector('#arrow-pip');
-
-            const headerScratch = container.querySelector('#header-scratch');
-            const contentScratch = container.querySelector('#content-scratch');
-            const arrowScratch = container.querySelector('#arrow-scratch');
-
-            const toggleOutline = (shouldOpen) => {
-                const open = shouldOpen !== undefined ? shouldOpen : contentOutline.style.display === 'none';
-                contentOutline.style.display = open ? 'block' : 'none';
-                arrowOutline.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';
+            // Setup Accordion handlers
+            const toggle = (c, a, force) => {
+                const open = force !== undefined ? force : c.style.display === 'none';
+                c.style.display = open ? (c.id === 'content-outline' ? 'block' : 'flex') : 'none';
+                a.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';
             };
 
-            const togglePip = (shouldOpen) => {
-                const open = shouldOpen !== undefined ? shouldOpen : contentPip.style.display === 'none';
-                contentPip.style.display = open ? 'flex' : 'none';
-                arrowPip.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';
-            };
-
-            const toggleScratch = (shouldOpen) => {
-                const open = shouldOpen !== undefined ? shouldOpen : contentScratch.style.display === 'none';
-                contentScratch.style.display = open ? 'flex' : 'none';
-                arrowScratch.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';
-            };
-
-            headerOutline.addEventListener('click', () => toggleOutline());
-            headerPip.addEventListener('click', () => togglePip());
-            headerScratch.addEventListener('click', () => toggleScratch());
-
-            // Mount the live Code Outline view (self-refreshing via api.events)
-            initOutlineSection(api, contentOutline);
-
-            // Listen for internal execution routing event to slide/expand the Scratchpad section
-            container.addEventListener('open-scratchpad-accordion', () => {
-                toggleOutline(false);
-                togglePip(false);
-                toggleScratch(true);
-                const editor = container.querySelector('#scratchpad-editor');
-                if (editor) setTimeout(() => editor.focus(), 60);
-            });
-
-            // ============================================================
-            //  Pip Package Manager
-            // ============================================================
-            const pipInput = container.querySelector('#pip-input');
-            const pipBtn = container.querySelector('#pip-install-btn');
-            const pipOutput = container.querySelector('#pip-output');
-            const pipEnvLabel = container.querySelector('#pip-env-label');
-            const pipPopular = container.querySelector('#pip-popular');
-
-            // Reflect the current install target in the header.
-            pipEnvLabel.textContent = resolvePython().env;
-
-            let pipChild = null; // single active install at a time
-
-            const POPULAR = [
-                { name: 'requests', desc: 'HTTP library for Python' },
-                { name: 'numpy', desc: 'Scientific computing library' },
-                { name: 'pandas', desc: 'Data analysis toolset' },
-                { name: 'flask', desc: 'Lightweight web framework' },
-                { name: 'matplotlib', desc: 'Plotting & visualisation' }
+            const sections = [
+                ['outline', container.querySelector('#header-outline'), container.querySelector('#content-outline'), container.querySelector('#arrow-outline')],
+                ['venv', container.querySelector('#header-venv'), container.querySelector('#content-venv'), container.querySelector('#arrow-venv')],
+                ['pip', container.querySelector('#header-pip'), container.querySelector('#content-pip'), container.querySelector('#arrow-pip')],
+                ['tests', container.querySelector('#header-tests'), container.querySelector('#content-tests'), container.querySelector('#arrow-tests')],
+                ['scratch', container.querySelector('#header-scratch'), container.querySelector('#content-scratch'), container.querySelector('#arrow-scratch')]
             ];
 
-            POPULAR.forEach(({ name, desc }) => {
-                const row = document.createElement('div');
-                row.className = 'pkg-row';
-                row.style.cssText = 'background: var(--bg-darker); border: 1px solid var(--border-color); border-radius: 4px; padding: 6px 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px;';
-                row.innerHTML = `
-                    <div style="display: flex; flex-direction: column; min-width: 0;">
-                        <span style="font-size: 11px; font-weight: 600;">${name}</span>
-                        <span style="font-size: 9px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${desc}</span>
-                    </div>
-                    <button class="pkg-add-btn" style="padding: 2px 8px; background: transparent; border: 1px solid var(--accent-color); border-radius: 3px; color: var(--accent-color); cursor: pointer; font-size: 9px; white-space: nowrap;">Add</button>
-                `;
-                row.querySelector('.pkg-add-btn').addEventListener('click', () => runPipInstall(name));
-                pipPopular.appendChild(row);
+            sections.forEach(([id, h, c, a]) => {
+                h.addEventListener('click', () => toggle(c, a));
             });
 
-            const appendPipLog = (text, color) => {
-                if (!pipOutput.isConnected) return;
+            container.addEventListener('open-scratchpad-accordion', () => {
+                sections.forEach(([id, h, c, a]) => toggle(c, a, id === 'scratch'));
+                const ed = container.querySelector('#scratchpad-editor');
+                if (ed) setTimeout(() => ed.focus(), 60);
+            });
+
+            // Mount Outline & Test Explorer
+            initOutlineSection(api, container.querySelector('#content-outline'));
+            initTestExplorer(api, container.querySelector('#content-tests'));
+
+            // Venv Manager UI logic
+            const venvCurrentName = container.querySelector('#venv-current-name');
+            const venvBadge = container.querySelector('#py-env-badge');
+            const venvCreateBtn = container.querySelector('#venv-create-btn');
+            const venvLog = container.querySelector('#venv-log-output');
+
+            const updateEnvDisplay = () => {
+                const env = resolvePython().env;
+                venvCurrentName.textContent = env;
+                venvBadge.textContent = env;
+            };
+            updateEnvDisplay();
+            api.events.on('pythonix-env-changed', updateEnvDisplay);
+
+            venvCreateBtn.addEventListener('click', async () => {
+                venvLog.style.display = 'block';
+                venvLog.innerHTML = '';
+                await createVirtualEnv(api, venvLog);
+                updateEnvDisplay();
+            });
+
+            // Pip Manager UI logic
+            const pipInput = container.querySelector('#pip-input');
+            const pipBtn = container.querySelector('#pip-install-btn');
+            const pipReqBtn = container.querySelector('#pip-req-install');
+            const pipFreezeBtn = container.querySelector('#pip-freeze-export');
+            const pipOutput = container.querySelector('#pip-output');
+
+            const logPip = (t, color) => {
                 pipOutput.style.display = 'block';
                 const span = document.createElement('span');
                 if (color) span.style.color = color;
-                span.textContent = text;
+                span.textContent = t;
                 pipOutput.appendChild(span);
                 pipOutput.scrollTop = pipOutput.scrollHeight;
             };
 
-            const setPipBusy = (busy) => {
-                pipBtn.disabled = busy;
-                pipBtn.style.opacity = busy ? '0.6' : '1';
-                pipBtn.style.cursor = busy ? 'default' : 'pointer';
-                pipBtn.innerHTML = busy ? `<i class="fa-solid fa-spinner fa-spin"></i>` : 'Install';
-            };
-
-            // A pip requirement specifier: name plus optional extras/version markers.
-            // Reject anything starting with "-" so a stray token can't become a pip flag.
-            const isValidPackageSpec = (spec) => /^[A-Za-z0-9][A-Za-z0-9._\-\[\]<>=!~,() ]*$/.test(spec);
-
-            function runPipInstall(pkg) {
-                pkg = (pkg || '').trim();
-                if (!pkg) return;
-
-                if (pipChild) {
-                    appendPipLog(`\nAn install is already running. Please wait…\n`, ERROR_RED);
-                    return;
-                }
-                if (!isValidPackageSpec(pkg)) {
-                    pipOutput.textContent = '';
-                    appendPipLog(`Invalid package name: "${pkg}"\n`, ERROR_RED);
-                    return;
-                }
+            const runPipCmd = (args) => {
                 if (!isElectron) {
-                    pipOutput.textContent = '';
-                    appendPipLog('Native pip execution is only available in the Desktop Shell environment.\n', ERROR_RED);
+                    logPip('Pip execution requires Desktop Shell.\n', '#e06c75');
                     return;
                 }
-
                 pipOutput.textContent = '';
-                setPipBusy(true);
-                appendPipLog(`$ pip install ${pkg}\n`, 'var(--accent-color)');
-
-                // Split so specs like "numpy pandas" or "requests==2.31" pass through as separate args.
-                const pkgArgs = pkg.split(/\s+/).filter(Boolean);
-                pipChild = spawnPython(['-m', 'pip', 'install', ...pkgArgs], {
-                    onStdout: (t) => appendPipLog(t),
-                    onStderr: (t) => appendPipLog(t, 'var(--text-muted)'),
+                logPip(`$ pip ${args.join(' ')}\n`, 'var(--accent-color)');
+                spawnPython(['-m', 'pip', ...args], {
+                    onStdout: (t) => logPip(t),
+                    onStderr: (t) => logPip(t, 'var(--text-muted)'),
                     onClose: (code) => {
-                        pipChild = null;
-                        setPipBusy(false);
-                        if (code === 0) {
-                            appendPipLog(`\n✓ Successfully installed ${pkg}\n`, SUCCESS_GREEN);
-                        } else {
-                            appendPipLog(`\n✗ pip exited with code ${code}\n`, ERROR_RED);
-                        }
-                    },
-                    onError: (err) => {
-                        pipChild = null;
-                        setPipBusy(false);
-                        appendPipLog(`\nFailed to launch pip: ${err.message}\nEnsure Python is installed and on your PATH.\n`, ERROR_RED);
+                        if (code === 0) logPip('\n✓ Pip operation succeeded.\n', 'var(--syntax-string, #98c379)');
+                        else logPip(`\n✗ Pip exited with code ${code}\n`, '#e06c75');
                     }
                 });
-            }
+            };
 
             pipBtn.addEventListener('click', () => {
                 const pkg = pipInput.value.trim();
-                if (pkg) {
-                    runPipInstall(pkg);
-                    pipInput.value = '';
-                }
+                if (pkg) { runPipCmd(['install', pkg]); pipInput.value = ''; }
             });
-            pipInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    pipBtn.click();
-                }
-            });
+            pipReqBtn.addEventListener('click', () => runPipCmd(['install', '-r', 'requirements.txt']));
+            pipFreezeBtn.addEventListener('click', () => runPipCmd(['freeze']));
 
-            // ============================================================
-            //  Interactive Scratchpad
-            // ============================================================
+            // Scratchpad Preset Handler
             const editor = container.querySelector('#scratchpad-editor');
+            const presetSelect = container.querySelector('#scratch-preset');
             const runBtn = container.querySelector('#scratchpad-run-btn');
             const clearBtn = container.querySelector('#scratchpad-clear-btn');
             const output = container.querySelector('#scratchpad-output');
 
-            let scratchChild = null;
-
-            const setRunButtonState = (running) => {
-                if (running) {
-                    runBtn.innerHTML = `<i class="fa-solid fa-stop"></i> Stop`;
-                    runBtn.style.background = ERROR_RED;
-                } else {
-                    runBtn.innerHTML = `<i class="fa-solid fa-play"></i> Run Code`;
-                    runBtn.style.background = 'var(--accent-color)';
+            presetSelect.addEventListener('change', () => {
+                switch (presetSelect.value) {
+                    case 'fastapi':
+                        editor.value = `from fastapi import FastAPI\n\napp = FastAPI()\n\n@app.get("/")\ndef read_root():\n    return {"message": "Hello from Pythonix FastAPI!"}\n\nprint("FastAPI app instance created.")`;
+                        break;
+                    case 'benchmark':
+                        editor.value = `import time\n\ndef benchmark():\n    start = time.perf_counter()\n    res = sum(i * i for i in range(1_000_000))\n    elapsed = (time.perf_counter() - start) * 1000\n    print(f"Computed sum in {elapsed:.2f} ms: {res}")\n\nbenchmark()`;
+                        break;
+                    case 'scraper':
+                        editor.value = `import urllib.request\nimport json\n\ntry:\n    req = urllib.request.urlopen("https://httpbin.org/get")\n    data = json.loads(req.read().decode())\n    print("Fetched URL headers:", data.get("headers"))\nexcept Exception as e:\n    print("Scraper error:", e)`;
+                        break;
+                    case 'dataviz':
+                        editor.value = `import math\n\ndata = [round(math.sin(x / 10), 3) for x in range(20)]\nprint("Wave dataset:", data)`;
+                        break;
                 }
-            };
+            });
 
-            const appendOutput = (text, color) => {
-                if (!output.isConnected) return;
-                const span = document.createElement('span');
-                if (color) span.style.color = color;
-                span.textContent = text;
-                output.appendChild(span);
-                output.scrollTop = output.scrollHeight;
-            };
-
+            let scratchChild = null;
             clearBtn.addEventListener('click', () => {
                 editor.value = '';
                 output.textContent = 'Console idle...';
-                output.style.color = 'var(--text-muted)';
             });
-
-            const stopScratch = () => {
-                if (scratchChild) {
-                    try { scratchChild.kill(); } catch (e) { /* ignore */ }
-                }
-            };
-
-            const runScratch = () => {
-                const code = editor.value.trim();
-                if (!code) {
-                    output.textContent = 'Execution Error: Scratchpad is empty.';
-                    output.style.color = ERROR_RED;
-                    return;
-                }
-                if (!isElectron) {
-                    output.textContent = 'Native Python execution is only available in the Desktop Shell environment.';
-                    output.style.color = ERROR_RED;
-                    return;
-                }
-
-                // Reset output to a neutral, streamable surface.
-                output.textContent = '';
-                output.style.color = 'var(--text-main)';
-                appendOutput('Executing snippet…\n', 'var(--syntax-keyword)');
-
-                scratchChild = spawnPython(['-X', 'utf8', '-c', code], {
-                    onStdout: (t) => appendOutput(t),
-                    onStderr: (t) => appendOutput(t, ERROR_RED),
-                    onClose: (exitCode) => {
-                        const wasRunning = scratchChild;
-                        scratchChild = null;
-                        setRunButtonState(false);
-                        if (!wasRunning) return;
-                        if (exitCode === 0) {
-                            appendOutput(`\n[Finished]\n`, SUCCESS_GREEN);
-                        } else if (exitCode === null) {
-                            appendOutput(`\n[Stopped]\n`, 'var(--syntax-keyword)');
-                        } else {
-                            appendOutput(`\n[Exited with code ${exitCode}]\n`, ERROR_RED);
-                        }
-                    },
-                    onError: (err) => {
-                        scratchChild = null;
-                        setRunButtonState(false);
-                        output.textContent = `Process Error: Failed to execute Python.\n${err.message}`;
-                        output.style.color = ERROR_RED;
-                    }
-                });
-
-                if (scratchChild) setRunButtonState(true);
-            };
 
             runBtn.addEventListener('click', () => {
-                if (scratchChild) {
-                    stopScratch();
-                } else {
-                    runScratch();
-                }
-            });
-
-            // Keyboard ergonomics: Ctrl/Cmd+Enter runs, Tab inserts spaces instead of losing focus.
-            editor.addEventListener('keydown', (e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-                    e.preventDefault();
-                    if (!scratchChild) runScratch();
+                if (!isElectron) {
+                    output.textContent = 'Execution requires Desktop Shell environment.';
+                    output.style.color = '#e06c75';
                     return;
                 }
-                if (e.key === 'Tab') {
-                    e.preventDefault();
-                    const start = editor.selectionStart;
-                    const end = editor.selectionEnd;
-                    editor.value = editor.value.slice(0, start) + '    ' + editor.value.slice(end);
-                    editor.selectionStart = editor.selectionEnd = start + 4;
+                const code = editor.value.trim();
+                if (!code) return;
+
+                if (scratchChild) {
+                    try { scratchChild.kill(); } catch (e) {}
+                    scratchChild = null;
+                    runBtn.innerHTML = '<i class="fa-solid fa-play"></i> Run Code';
+                    return;
                 }
+
+                output.textContent = 'Executing snippet...\n';
+                output.style.color = 'var(--text-main)';
+                runBtn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop';
+
+                const appendOut = (t, color) => {
+                    const span = document.createElement('span');
+                    if (color) span.style.color = color;
+                    span.textContent = t;
+                    output.appendChild(span);
+                    output.scrollTop = output.scrollHeight;
+                };
+
+                scratchChild = spawnPython(['-X', 'utf8', '-c', code], {
+                    onStdout: (t) => appendOut(t),
+                    onStderr: (t) => appendOut(t, '#e06c75'),
+                    onClose: (code) => {
+                        scratchChild = null;
+                        runBtn.innerHTML = '<i class="fa-solid fa-play"></i> Run Code';
+                        if (code === 0) appendOut('\n[Finished]\n', 'var(--syntax-string, #98c379)');
+                        else appendOut(`\n[Exited code ${code}]\n`, '#e06c75');
+                    }
+                });
             });
         }
     });

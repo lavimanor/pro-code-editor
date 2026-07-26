@@ -38,7 +38,7 @@ function tagQualifier(attrs) {
 }
 
 /** HTML → indented tag tree. Comments/scripts are skipped for tag-depth purposes. */
-function parseHtml(text) {
+export function parseHtml(text) {
     const symbols = [];
     let depth = 0;
     const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
@@ -64,7 +64,7 @@ function parseHtml(text) {
 }
 
 /** CSS/SCSS/LESS → flat list of rule selectors. */
-function parseCss(text) {
+export function parseCss(text) {
     const symbols = [];
     // Strip comments so `{` inside them can't open a phantom rule.
     const cleaned = text.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, ' '));
@@ -141,7 +141,7 @@ const JS_NON_METHODS = new Set([
  * input — fine for a navigation aid. Nesting depth comes from real brace counting, so
  * methods indent under their class or object.
  */
-function parseJs(text) {
+export function parseJs(text) {
     const src = maskLiterals(text);
 
     // Prefix brace depth: depthByOffset[i] is how many `{` are open just before offset i.
@@ -207,7 +207,7 @@ function parseJs(text) {
 }
 
 /** Picks a parser from a lowercased file extension. Returns null for unsupported types. */
-function parseByLanguage(langId, text) {
+export function parseByLanguage(langId, text) {
     if (langId === 'html' || langId === 'htm') return parseHtml(text);
     if (['css', 'scss', 'less'].includes(langId)) return parseCss(text);
     if (['js', 'mjs', 'cjs', 'jsx'].includes(langId)) return parseJs(text);
